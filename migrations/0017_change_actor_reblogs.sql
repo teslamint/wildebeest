@@ -13,12 +13,6 @@ CREATE TABLE "new_actor_reblogs" (
 
 CREATE UNIQUE INDEX "unique_actor_reblogs" ON "new_actor_reblogs" ("actor_id", "object_id");
 
--- D1 does not support transactions, so between the execution of the migration and
--- the deployment of the Workers, it will not be possible to receive or post reblogs.
-
--- Ideally, the id of the received or created announce activity should be inserted,
--- but since it was not retained, the URL is made to look appropriate even though it cannot be accessed.
--- And this query probably won't work in PostgreSQL.
 INSERT INTO new_actor_reblogs (id, mastodon_id, actor_id, object_id, outbox_object_id, cdate)
 SELECT
 	'https://' || substr(
