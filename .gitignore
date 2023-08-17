@@ -1,8 +1,9 @@
 node_modules/
-yarn-error.log
-package-lock.json
-.wrangler/state/d1/*.sqlite3
+.wrangler/state/v3/**/*.sqlite*
 .DS_Store
+.dev.vars
+.dev.vars.bak
 /test-results/
 /playwright-report/
 /playwright/.cache/
+/coverage/

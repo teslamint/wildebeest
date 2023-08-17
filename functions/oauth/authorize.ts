@@ -1,14 +1,13 @@
 // https://docs.joinmastodon.org/methods/oauth/#authorize
 
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
-import type { Env } from 'wildebeest/backend/src/types/env'
+import * as access from 'wildebeest/backend/src/access'
+import { getUserByEmail } from 'wildebeest/backend/src/accounts'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
 import * as errors from 'wildebeest/backend/src/errors'
 import { getClientById } from 'wildebeest/backend/src/mastodon/client'
-import * as access from 'wildebeest/backend/src/access'
-import { getPersonByEmail } from 'wildebeest/backend/src/activitypub/actors'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import type { ContextData, Env } from 'wildebeest/backend/src/types'
 import { isUserAuthenticated } from 'wildebeest/backend/src/utils/auth/isUserAuthenticated'
+import { cors } from 'wildebeest/backend/src/utils/cors'
 
 // Extract the JWT token sent by Access (running before us).
 const extractJWTFromRequest = (request: Request) => request.headers.get('Cf-Access-Jwt-Assertion') || ''
@@ -45,7 +44,10 @@ export async function buildRedirect(
 	const clientId = url.searchParams.get('client_id') || ''
 	const client = await getClientById(db, clientId)
 	if (client === null) {
-		return errors.clientUnknown()
+		return errors.clientUnknown(
+			'invalid_grant',
+			'The provided authorization grant is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client.'
+		)
 	}
 
 	const redirect_uri = url.searchParams.get('redirect_uri')
@@ -87,7 +89,10 @@ export async function handleRequestPost(
 	}
 
 	const identity = await access.getIdentity({ jwt, domain: accessDomain })
-	const isFirstLogin = (await getPersonByEmail(db, identity!.email)) === null
+	if (!identity) {
+		return new Response('', { status: 401 })
+	}
+	const isFirstLogin = (await getUserByEmail(db, identity.email)) === null
 
 	return buildRedirect(db, request, isFirstLogin, jwt)
 }

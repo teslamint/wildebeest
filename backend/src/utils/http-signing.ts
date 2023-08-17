@@ -10,7 +10,7 @@ export async function signRequest(request: Request, key: CryptoKey, keyId: URL):
 					hash: 'SHA-256',
 				},
 				key,
-				str2ab(data as string)
+				str2ab(data)
 			)
 		)
 	mySigner.alg = 'hs2019' as Algorithm
@@ -18,7 +18,6 @@ export async function signRequest(request: Request, key: CryptoKey, keyId: URL):
 	if (!request.headers.has('Date')) {
 		request.headers.set('Date', new Date().toUTCString())
 	}
-
 	if (!request.headers.has('Host')) {
 		const url = new URL(request.url)
 		request.headers.set('Host', url.host)

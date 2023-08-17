@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 
 test('Display the list of toots in the explore page', async ({ page }) => {
 	await page.goto('http://127.0.0.1:8788/explore')
@@ -11,7 +11,11 @@ test('Display the list of toots in the explore page', async ({ page }) => {
 	]
 
 	for (const tootText of tootsTextsToCheck) {
-		await expect(page.locator('article').filter({ hasText: tootText })).toBeVisible()
+		if (tootText !== 'A very simple update: all good!') {
+			await expect(page.locator('article').filter({ hasText: tootText })).toBeVisible()
+		} else {
+			await expect(page.locator('article').filter({ hasText: tootText }).nth(1)).toBeVisible()
+		}
 	}
 })
 

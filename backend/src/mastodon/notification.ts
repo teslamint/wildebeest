@@ -1,29 +1,42 @@
-import type { APObject } from 'wildebeest/backend/src/activitypub/objects'
-import { type Database } from 'wildebeest/backend/src/database'
-import { defaultImages } from 'wildebeest/config/accounts'
-import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { urlToHandle } from 'wildebeest/backend/src/utils/handle'
-import { loadExternalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
-import { generateWebPushMessage } from 'wildebeest/backend/src/webpush'
-import { getActorById } from 'wildebeest/backend/src/activitypub/actors'
-import type { WebPushInfos, WebPushMessage } from 'wildebeest/backend/src/webpush/webpushinfos'
-import { WebPushResult } from 'wildebeest/backend/src/webpush/webpushinfos'
+import { isLocalAccount } from 'wildebeest/backend/src/accounts'
 import type { Actor } from 'wildebeest/backend/src/activitypub/actors'
+import * as actors from 'wildebeest/backend/src/activitypub/actors'
+import { getActorById } from 'wildebeest/backend/src/activitypub/actors'
+import {
+	type ApObject,
+	ensureObjectMastodonId,
+	getApUrl,
+	getObjectById,
+	getObjectByOriginalId,
+	isLocalObject,
+	mastodonIdSymbol,
+	originalActorIdSymbol,
+} from 'wildebeest/backend/src/activitypub/objects'
+import { Note } from 'wildebeest/backend/src/activitypub/objects/note'
+import type { Cache } from 'wildebeest/backend/src/cache'
+import { type Database } from 'wildebeest/backend/src/database'
+import { loadMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
+import { actorToMention, detectVisibility } from 'wildebeest/backend/src/mastodon/status'
+import { getSubscriptionForAllClients } from 'wildebeest/backend/src/mastodon/subscription'
+import { fromObject } from 'wildebeest/backend/src/media'
 import type {
-	NotificationType,
 	Notification,
 	NotificationsQueryResult,
+	NotificationType,
 } from 'wildebeest/backend/src/types/notification'
-import { getSubscriptionForAllClients } from 'wildebeest/backend/src/mastodon/subscription'
-import type { Cache } from 'wildebeest/backend/src/cache'
+import { actorToHandle, handleToAcct } from 'wildebeest/backend/src/utils/handle'
+import { generateWebPushMessage } from 'wildebeest/backend/src/webpush'
+import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
+import type { WebPushInfos, WebPushMessage } from 'wildebeest/backend/src/webpush/webpushinfos'
+import { WebPushResult } from 'wildebeest/backend/src/webpush/webpushinfos'
+import { defaultImages } from 'wildebeest/config/accounts'
 
 export async function createNotification(
 	db: Database,
 	type: NotificationType,
 	actor: Actor,
 	fromActor: Actor,
-	obj: APObject
+	obj: ApObject
 ): Promise<string> {
 	const query = `
           INSERT INTO actor_notifications (type, actor_id, from_actor_id, object_id)
@@ -34,6 +47,9 @@ export async function createNotification(
 		.prepare(query)
 		.bind(type, actor.id.toString(), fromActor.id.toString(), obj.id.toString())
 		.first<{ id: string }>()
+	if (!row) {
+		throw new Error('returned row is null')
+	}
 	return row.id
 }
 
@@ -46,6 +62,9 @@ export async function insertFollowNotification(db: Database, actor: Actor, fromA
           RETURNING id
 `
 	const row = await db.prepare(query).bind(type, actor.id.toString(), fromActor.id.toString()).first<{ id: string }>()
+	if (!row) {
+		throw new Error('returned row is null')
+	}
 	return row.id
 }
 
@@ -58,8 +77,8 @@ export async function sendFollowNotification(
 	vapidKeys: JWK
 ) {
 	let icon = new URL(defaultImages.avatar)
-	if (follower.icon) {
-		icon = follower.icon.url
+	if (follower.icon && follower.icon.url) {
+		icon = getApUrl(follower.icon.url)
 	}
 
 	const data = {
@@ -90,8 +109,8 @@ export async function sendLikeNotification(
 	vapidKeys: JWK
 ) {
 	let icon = new URL(defaultImages.avatar)
-	if (fromActor.icon) {
-		icon = fromActor.icon.url
+	if (fromActor.icon && fromActor.icon.url) {
+		icon = getApUrl(fromActor.icon.url)
 	}
 
 	const data = {
@@ -122,8 +141,8 @@ export async function sendMentionNotification(
 	vapidKeys: JWK
 ) {
 	let icon = new URL(defaultImages.avatar)
-	if (fromActor.icon) {
-		icon = fromActor.icon.url
+	if (fromActor.icon && fromActor.icon.url) {
+		icon = getApUrl(fromActor.icon.url)
 	}
 
 	const data = {
@@ -154,8 +173,8 @@ export async function sendReblogNotification(
 	vapidKeys: JWK
 ) {
 	let icon = new URL(defaultImages.avatar)
-	if (fromActor.icon) {
-		icon = fromActor.icon.url
+	if (fromActor.icon && fromActor.icon.url) {
+		icon = getApUrl(fromActor.icon.url)
 	}
 
 	const data = {
@@ -198,18 +217,18 @@ async function sendNotification(db: Database, actor: Actor, message: WebPushMess
 
 export async function getNotifications(db: Database, actor: Actor, domain: string): Promise<Array<Notification>> {
 	const query = `
-    SELECT
-        objects.*,
-        actor_notifications.type,
-        actor_notifications.actor_id,
-        actor_notifications.from_actor_id as notif_from_actor_id,
-        actor_notifications.cdate as notif_cdate,
-        actor_notifications.id as notif_id
-    FROM actor_notifications
-    LEFT JOIN objects ON objects.id=actor_notifications.object_id
-    WHERE actor_id=?
-    ORDER BY actor_notifications.cdate DESC
-    LIMIT 20
+SELECT
+  objects.*,
+  actor_notifications.type as notif_type,
+  actor_notifications.actor_id as notif_actor_id,
+  actor_notifications.from_actor_id as notif_from_actor_id,
+  actor_notifications.cdate as notif_cdate,
+  actor_notifications.id as notif_id
+FROM actor_notifications
+LEFT JOIN objects ON objects.id=actor_notifications.object_id
+WHERE actor_id=?
+ORDER BY actor_notifications.cdate DESC
+LIMIT 20
   `
 
 	const stmt = db.prepare(query).bind(actor.id.toString())
@@ -223,17 +242,7 @@ export async function getNotifications(db: Database, actor: Actor, domain: strin
 		return []
 	}
 
-	for (let i = 0, len = results.length; i < len; i++) {
-		const result = results[i]
-		let properties
-		if (typeof result.properties === 'object') {
-			// neon uses JSONB for properties which is returned as a deserialized
-			// object.
-			properties = result.properties
-		} else {
-			// D1 uses a string for JSON properties
-			properties = JSON.parse(result.properties)
-		}
+	for (const result of results) {
 		const notifFromActorId = new URL(result.notif_from_actor_id)
 
 		const notifFromActor = await getActorById(db, notifFromActorId)
@@ -242,42 +251,106 @@ export async function getNotifications(db: Database, actor: Actor, domain: strin
 			continue
 		}
 
-		const acct = urlToHandle(notifFromActorId)
-		const notifFromAccount = await loadExternalMastodonAccount(acct, notifFromActor)
+		const notifFromAccount = await loadMastodonAccount(db, domain, notifFromActor, actorToHandle(notifFromActor))
 
 		const notif: Notification = {
 			id: result.notif_id.toString(),
-			type: result.type,
+			type: result.notif_type,
 			created_at: new Date(result.notif_cdate).toISOString(),
 			account: notifFromAccount,
 		}
 
-		if (result.type === 'mention' || result.type === 'favourite') {
+		if (result.notif_type === 'mention' || result.notif_type === 'favourite') {
+			if (result.id === null || result.type !== 'Note') {
+				console.warn('notification object is null')
+				continue
+			}
+
+			result.mastodon_id = await ensureObjectMastodonId(db, result.mastodon_id, result.cdate)
+
+			let properties
+			if (typeof result.properties === 'object') {
+				// neon uses JSONB for properties which is returned as a deserialized
+				// object.
+				properties = result.properties as Note
+			} else {
+				// D1 uses a string for JSON properties
+				properties = JSON.parse(result.properties) as Note
+			}
+
+			const mediaAttachments = Array.isArray(properties.attachment)
+				? properties.attachment.map((doc) => fromObject(doc))
+				: []
+
+			let inReplyToId: string | null = null
+			let inReplyToAccountId: string | null = null
+			if (properties.inReplyTo) {
+				const replied = isLocalObject(domain, properties.inReplyTo)
+					? await getObjectById(db, properties.inReplyTo)
+					: await getObjectByOriginalId(db, properties.inReplyTo)
+				if (replied) {
+					inReplyToId = replied[mastodonIdSymbol]
+					try {
+						const author = await actors.getAndCache(new URL(replied[originalActorIdSymbol]), db)
+						inReplyToAccountId = author[mastodonIdSymbol]
+					} catch (err) {
+						console.warn('failed to get author of reply', err)
+						inReplyToId = null
+					}
+				}
+			}
+
 			const actorId = new URL(result.original_actor_id)
 			const actor = await actors.getAndCache(actorId, db)
+			const handle = actorToHandle(actor)
 
-			const acct = urlToHandle(actorId)
-			const account = await loadExternalMastodonAccount(acct, actor)
+			const mentions = []
+			for (const link of properties.tag ?? []) {
+				if (link.type === 'Mention') {
+					const target = actor.id.toString() === link.href.toString() ? actor : await getActorById(db, link.href)
+					if (target) {
+						mentions.push(actorToMention(domain, target))
+					}
+				}
+			}
 
 			notif.status = {
 				id: result.mastodon_id,
+				uri: new URL(result.id),
+				created_at: new Date(properties.published ?? result.cdate).toISOString(),
+				account: await loadMastodonAccount(db, domain, actor, handle),
 				content: properties.content,
-				uri: result.id,
-				url: new URL(`/@${actor.preferredUsername}/${result.mastodon_id}`, 'https://' + domain),
-				created_at: new Date(result.cdate).toISOString(),
-
-				account,
+				visibility: detectVisibility({ to: properties.to, cc: properties.cc, followers: actor.followers }),
+				sensitive: properties.sensitive,
+				spoiler_text: properties.spoiler_text ?? '',
+				media_attachments: mediaAttachments,
+				mentions,
+				url: properties.url
+					? new URL(properties.url)
+					: isLocalAccount(domain, handle)
+					? new URL(`/@${handleToAcct(handle, domain)}/${result.mastodon_id}`, 'https://' + domain)
+					: new URL(result.id),
+				reblog: null,
+				edited_at: properties.updated ? new Date(properties.updated).toISOString() : null,
 
 				// TODO: stub values
-				emojis: [],
-				media_attachments: [],
-				tags: [],
-				mentions: [],
-				replies_count: 0,
 				reblogs_count: 0,
 				favourites_count: 0,
-				visibility: 'public',
-				spoiler_text: '',
+				replies_count: 0,
+				tags: [],
+				emojis: [],
+				favourited: false,
+				reblogged: false,
+				in_reply_to_id: inReplyToId,
+				in_reply_to_account_id: inReplyToAccountId,
+				poll: null,
+				card: null,
+				language: null,
+				text: null,
+				muted: false,
+				bookmarked: false,
+				pinned: false,
+				// filtered
 			}
 		}
 

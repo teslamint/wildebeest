@@ -1,38 +1,151 @@
+import { MastodonError } from 'wildebeest/backend/src/errors'
+import { output, SafeParseReturnType, SomeZodObject, z, ZodObject, ZodRawShape, ZodTypeAny } from 'zod'
+
+export const HTTPS = 'https://'
+
+export type JsonResponse<T> = Response & {
+	_T: T
+}
+
+export type MastodonApiResponse<T> = JsonResponse<T> | JsonResponse<MastodonError>
+
+export function makeJsonResponse<T>(
+	data: T,
+	init: ResponseInit = {
+		headers: {
+			'content-type': 'application/json; charset=utf-8',
+		},
+	}
+): JsonResponse<T> {
+	return new Response(JSON.stringify(data), init) as JsonResponse<T>
+}
+
+// The following variable is taken from the zodix library (https://github.com/rileytomasek/zodix)
+// Copyright (c) 2022 Riley Tomasek
+// The zodix library is released under the MIT License.
+const isZodType = (input: ZodRawShape | ZodTypeAny): input is ZodTypeAny => {
+	return typeof input.parse === 'function'
+}
+
+const isZodObject = (input: ZodTypeAny): input is SomeZodObject => {
+	return z.getParsedType(input) === z.ZodParsedType.object
+}
+
+const isAllPropsOptional = (input: ZodTypeAny): boolean => {
+	if (isZodObject(input)) {
+		return Object.values(input.shape).every((v) => v.isOptional())
+	}
+	return false
+}
+
+// The following type is taken from the zodix library (https://github.com/rileytomasek/zodix)
+// Copyright (c) 2022 Riley Tomasek
+// The zodix library is released under the MIT License.
+type ParsedData<T extends ZodRawShape | ZodTypeAny> = T extends ZodTypeAny
+	? output<T>
+	: T extends ZodRawShape
+	? output<ZodObject<T>>
+	: never
+
+// The following type is taken from the zodix library (https://github.com/rileytomasek/zodix)
+// Copyright (c) 2022 Riley Tomasek
+// The zodix library is released under the MIT License.
+type SafeParsedData<T extends ZodRawShape | ZodTypeAny> = T extends ZodTypeAny
+	? SafeParseReturnType<z.infer<T>, ParsedData<T>>
+	: T extends ZodRawShape
+	? SafeParseReturnType<ZodObject<T>, ParsedData<T>>
+	: never
+
+// The following type is taken from the zodix library (https://github.com/rileytomasek/zodix)
+// Copyright (c) 2022 Riley Tomasek
+// The zodix library is released under the MIT License.
+type ParsedSearchParams = Record<string, string | string[]>
+
+function parseSearchParams(searchParams: URLSearchParams): ParsedSearchParams {
+	const values: ParsedSearchParams = {}
+	for (const [key, value] of searchParams) {
+		if (!key.endsWith('[]')) {
+			values[key] = value
+			continue
+		}
+
+		const currentVal = values[key]
+		if (currentVal && Array.isArray(currentVal)) {
+			currentVal.push(value)
+		} else if (currentVal) {
+			values[key] = [currentVal, value]
+		} else {
+			values[key] = [value]
+		}
+	}
+	for (const key in values) {
+		if (key.endsWith('[]')) {
+			const newKey = key.slice(0, -2)
+			values[newKey] = [...values[key]]
+			delete values[key]
+		}
+	}
+	return values
+}
+
+export async function readParams<T extends ZodRawShape | ZodTypeAny>(
+	request: Request,
+	schema: T
+): Promise<SafeParsedData<T>> {
+	const finalSchema = isZodType(schema) ? schema : z.object(schema)
+	const url = new URL(request.url)
+	return finalSchema.safeParseAsync(parseSearchParams(url.searchParams)) as Promise<SafeParsedData<T>>
+}
+
 // Extract the request body as the type `T`. Use this function when the requset
 // can be url encoded, form data or JSON. However, not working for formData
 // containing binary data (like File).
-export async function readBody<T>(request: Request): Promise<T> {
-	let form = null
-	const contentType = request.headers.get('content-type')
-	if (contentType === null) {
-		throw new Error('invalid request')
-	}
-	if (contentType.startsWith('application/json')) {
-		return request.json<T>()
-	} else if (
-		contentType.includes('charset') &&
-		contentType.includes('multipart/form-data') &&
-		contentType.includes('boundary')
-	) {
-		form = await localFormDataParse(request)
-	} else {
-		form = await request.formData()
-	}
+export async function readBody<T extends ZodRawShape | ZodTypeAny>(
+	request: Request,
+	schema: T
+): Promise<SafeParsedData<T>> {
+	try {
+		const finalSchema = isZodType(schema) ? schema : z.object(schema)
 
-	const out: any = {}
-
-	for (const [key, value] of form) {
-		if (key.endsWith('[]')) {
-			// The `key[]` notiation is used when sending an array of values.
-
-			const key2 = key.replace('[]', '')
-			const outArr: unknown[] = (out[key2] ??= [])
-			outArr.push(value)
-		} else {
-			out[key] = value
+		const contentType = request.headers.get('content-type')
+		if (contentType === null) {
+			if (isAllPropsOptional(finalSchema)) {
+				return finalSchema.safeParseAsync({}) as Promise<SafeParsedData<T>>
+			}
+			throw new Error('invalid request')
 		}
+
+		if (contentType.startsWith('application/json')) {
+			const url = new URL(request.url)
+			const data = await request.json<Record<string, unknown>>()
+			return finalSchema.safeParseAsync({
+				...parseSearchParams(url.searchParams),
+				...data,
+			}) as Promise<SafeParsedData<T>>
+		}
+		const data = ['charset', 'multipart/form-data', 'boundary'].some((v) => contentType.includes(v))
+			? await localFormDataParse(request)
+			: await request.formData()
+
+		// Context on `as any` usage: https://github.com/microsoft/TypeScript/issues/30584
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const result = parseSearchParams(new URLSearchParams(data as any))
+		return finalSchema.safeParseAsync(result) as Promise<SafeParsedData<T>>
+	} catch (err: unknown) {
+		if (err instanceof Error) {
+			return {
+				success: false,
+				error: new z.ZodError([
+					{
+						code: z.ZodIssueCode.custom,
+						path: [],
+						message: err.message,
+					},
+				]),
+			} as SafeParsedData<T>
+		}
+		throw err
 	}
-	return out as T
 }
 
 export async function localFormDataParse(request: Request): Promise<FormData> {

@@ -1,33 +1,40 @@
 // https://docs.joinmastodon.org/methods/statuses/#get
 
-import type { Cache } from 'wildebeest/backend/src/cache'
-import { type Note } from 'wildebeest/backend/src/activitypub/objects/note'
-import * as activities from 'wildebeest/backend/src/activitypub/activities/delete'
-import { cors } from 'wildebeest/backend/src/utils/cors'
+import { createDeleteActivity } from 'wildebeest/backend/src/activitypub/activities/delete'
 import type { Person } from 'wildebeest/backend/src/activitypub/actors'
-import type { UUID } from 'wildebeest/backend/src/types'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
-import { getMastodonStatusById, toMastodonStatusFromObject } from 'wildebeest/backend/src/mastodon/status'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import * as errors from 'wildebeest/backend/src/errors'
-import { getObjectByMastodonId, deleteObject } from 'wildebeest/backend/src/activitypub/objects'
-import { urlToHandle } from 'wildebeest/backend/src/utils/handle'
 import { deliverFollowers } from 'wildebeest/backend/src/activitypub/deliver'
-import type { Queue, DeliverMessageBody } from 'wildebeest/backend/src/types/queue'
-import * as timeline from 'wildebeest/backend/src/mastodon/timeline'
-import { cacheFromEnv } from 'wildebeest/backend/src/cache'
+import { deleteObject, getObjectByMastodonId } from 'wildebeest/backend/src/activitypub/objects'
+import { Note } from 'wildebeest/backend/src/activitypub/objects/note'
+import { Cache, cacheFromEnv } from 'wildebeest/backend/src/cache'
 import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import * as errors from 'wildebeest/backend/src/errors'
+import { getMastodonStatusById, toMastodonStatusFromObject } from 'wildebeest/backend/src/mastodon/status'
+import * as timeline from 'wildebeest/backend/src/mastodon/timeline'
+import type { ContextData, DeliverMessageBody, Env, MastodonId, Queue } from 'wildebeest/backend/src/types'
+import { cors } from 'wildebeest/backend/src/utils/cors'
+import { actorToAcct } from 'wildebeest/backend/src/utils/handle'
 
-export const onRequestGet: PagesFunction<Env, any, ContextData> = async ({ params, env, request, data }) => {
+export const onRequestGet: PagesFunction<Env, 'id', ContextData> = async ({ params: { id }, env, request, data }) => {
+	if (typeof id !== 'string') {
+		return errors.statusNotFound(String(id))
+	}
 	const domain = new URL(request.url).hostname
-	return handleRequestGet(await getDatabase(env), params.id as UUID, domain, data.connectedActor)
+	return handleRequestGet(await getDatabase(env), id, domain, data.connectedActor)
 }
 
-export const onRequestDelete: PagesFunction<Env, any, ContextData> = async ({ params, env, request, data }) => {
+export const onRequestDelete: PagesFunction<Env, 'id', ContextData> = async ({
+	params: { id },
+	env,
+	request,
+	data,
+}) => {
+	if (typeof id !== 'string') {
+		return errors.statusNotFound(String(id))
+	}
 	const domain = new URL(request.url).hostname
 	return handleRequestDelete(
 		await getDatabase(env),
-		params.id as UUID,
+		id,
 		data.connectedActor,
 		domain,
 		env.userKEK,
@@ -38,9 +45,10 @@ export const onRequestDelete: PagesFunction<Env, any, ContextData> = async ({ pa
 
 export async function handleRequestGet(
 	db: Database,
-	id: UUID,
+	id: MastodonId,
 	domain: string,
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars -- To be used when we implement private statuses
+	// To be used when we implement private statuses
+	// eslint-disable-next-line unused-imports/no-unused-vars
 	connectedActor: Person
 ): Promise<Response> {
 	const status = await getMastodonStatusById(db, id, domain)
@@ -50,8 +58,8 @@ export async function handleRequestGet(
 
 	// future validation for private statuses
 	/*
-	if (status.private && status.account.id !== urlToHandle(connectedActor.id)) {
-		return errors.notAuthorized("status is private");
+	if (status.private && status.account.id !== actorToHandle(connectedActor)) {
+		return errors.notAuthorized('status is private')
 	}
 	*/
 
@@ -64,14 +72,14 @@ export async function handleRequestGet(
 
 export async function handleRequestDelete(
 	db: Database,
-	id: UUID,
+	id: MastodonId,
 	connectedActor: Person,
 	domain: string,
 	userKEK: string,
 	queue: Queue<DeliverMessageBody>,
 	cache: Cache
 ): Promise<Response> {
-	const obj = (await getObjectByMastodonId(db, id)) as Note
+	const obj = await getObjectByMastodonId<Note>(db, id)
 	if (obj === null) {
 		return errors.statusNotFound(id)
 	}
@@ -80,14 +88,14 @@ export async function handleRequestDelete(
 	if (status === null) {
 		return errors.statusNotFound(id)
 	}
-	if (status.account.id !== urlToHandle(connectedActor.id)) {
+	if (status.account.acct !== actorToAcct(connectedActor, domain)) {
 		return errors.statusNotFound(id)
 	}
 
 	await deleteObject(db, obj)
 
 	// FIXME: deliver a Delete message to our peers
-	const activity = activities.create(domain, connectedActor, obj)
+	const activity = await createDeleteActivity(db, domain, connectedActor, obj)
 	await deliverFollowers(db, userKEK, connectedActor, activity, queue)
 
 	await timeline.pregenerateTimelines(domain, db, cache, connectedActor)

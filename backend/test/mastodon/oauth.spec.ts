@@ -1,11 +1,15 @@
-import { getSigningKey } from 'wildebeest/backend/src/mastodon/account'
-import * as oauth_authorize from 'wildebeest/functions/oauth/authorize'
-import * as first_login from 'wildebeest/functions/first-login'
-import * as oauth_token from 'wildebeest/functions/oauth/token'
-import { isUrlValid, makeDB, assertCORS, assertJSON, createTestClient } from '../utils'
-import { TEST_JWT, ACCESS_CERTS } from '../test-data'
 import { strict as assert } from 'node:assert/strict'
-import type { Actor } from 'wildebeest/backend/src/activitypub/actors'
+
+import { getActorById } from 'wildebeest/backend/src/activitypub/actors'
+import { MastodonError } from 'wildebeest/backend/src/errors'
+import { getSigningKey } from 'wildebeest/backend/src/mastodon/account'
+import { getClientByClientCredential } from 'wildebeest/backend/src/mastodon/client'
+import * as first_login from 'wildebeest/functions/first-login'
+import * as oauth_authorize from 'wildebeest/functions/oauth/authorize'
+import * as oauth_token from 'wildebeest/functions/oauth/token'
+
+import { ACCESS_CERTS, TEST_JWT } from '../test-data'
+import { assertCORS, assertJSON, assertStatus, createTestClient, isUrlValid, makeDB } from '../utils'
 
 const userKEK = 'test_kek3'
 const accessDomain = 'access.com'
@@ -15,19 +19,25 @@ describe('Mastodon APIs', () => {
 	describe('oauth', () => {
 		beforeEach(() => {
 			globalThis.fetch = async (input: RequestInfo) => {
-				if (input === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
-					return new Response(JSON.stringify(ACCESS_CERTS))
+				if (input instanceof URL || typeof input === 'string') {
+					if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
+						return new Response(JSON.stringify(ACCESS_CERTS))
+					}
+
+					if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
+						return new Response(
+							JSON.stringify({
+								email: 'some@cloudflare.com',
+							})
+						)
+					}
 				}
 
-				if (input === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
-					return new Response(
-						JSON.stringify({
-							email: 'some@cloudflare.com',
-						})
-					)
+				if (input instanceof URL || typeof input === 'string') {
+					throw new Error('unexpected request to ' + input.toString())
+				} else {
+					throw new Error('unexpected request to ' + input.url)
 				}
-
-				throw new Error('unexpected request to ' + input)
 			}
 		})
 
@@ -36,7 +46,7 @@ describe('Mastodon APIs', () => {
 
 			let req = new Request('https://example.com/oauth/authorize')
 			let res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 401)
+			await assertStatus(res, 401)
 
 			const headers = {
 				'Cf-Access-Jwt-Assertion': TEST_JWT,
@@ -44,11 +54,11 @@ describe('Mastodon APIs', () => {
 
 			req = new Request('https://example.com/oauth/authorize', { headers })
 			res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 400)
+			await assertStatus(res, 400)
 
 			req = new Request('https://example.com/oauth/authorize?scope=foobar', { headers })
 			res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 400)
+			await assertStatus(res, 400)
 		})
 
 		test('authorize unsupported response_type', async () => {
@@ -66,7 +76,7 @@ describe('Mastodon APIs', () => {
 
 			const req = new Request('https://example.com/oauth/authorize?' + params, { headers })
 			const res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 400)
+			await assertStatus(res, 400)
 		})
 
 		test("authorize redirect_uri doesn't match client redirect_uris", async () => {
@@ -85,7 +95,7 @@ describe('Mastodon APIs', () => {
 				headers,
 			})
 			const res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 422)
+			await assertStatus(res, 422)
 		})
 
 		test('authorize redirects with code on success and show first login', async () => {
@@ -105,7 +115,7 @@ describe('Mastodon APIs', () => {
 				headers,
 			})
 			const res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 302)
+			await assertStatus(res, 302)
 
 			const location = new URL(res.headers.get('location') || '')
 			assert.equal(
@@ -114,8 +124,9 @@ describe('Mastodon APIs', () => {
 			)
 
 			// actor isn't created yet
-			const { count } = await db.prepare('SELECT count(*) as count FROM actors').first<{ count: number }>()
-			assert.equal(count, 0)
+			const row = await db.prepare('SELECT count(*) as count FROM actors').first<{ count: number }>()
+			assert.ok(row)
+			assert.equal(row.count, 0)
 		})
 
 		test('first login is protected by Access', async () => {
@@ -134,7 +145,7 @@ describe('Mastodon APIs', () => {
 				body: formData,
 			})
 			const res = await first_login.handlePostRequest(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 401)
+			await assertStatus(res, 401)
 		})
 
 		test('first login creates the user and redirects', async () => {
@@ -156,22 +167,28 @@ describe('Mastodon APIs', () => {
 				},
 			})
 			const res = await first_login.handlePostRequest(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 302)
+			await assertStatus(res, 302)
 
 			const location = res.headers.get('location')
 			assert.equal(location, 'https://redirect.com/a')
 
-			const actor = await db
-				.prepare('SELECT * FROM actors')
-				.first<{ properties: string; email: string; id: string } & Actor>()
-			const properties = JSON.parse(actor.properties)
+			const row = await db
+				.prepare(
+					'SELECT actors.properties, users.email, actors.id FROM actors INNER JOIN users ON users.actor_id = actors.id'
+				)
+				.first<{ properties: string; email: string; id: string }>()
+			assert.ok(row)
+			const properties = JSON.parse(row.properties)
 
-			assert.equal(actor.email, 'sven@cloudflare.com')
+			assert.equal(row.email, 'sven@cloudflare.com')
 			assert.equal(properties.preferredUsername, 'username')
 			assert.equal(properties.name, 'name')
-			assert(isUrlValid(actor.id))
+			assert(isUrlValid(row.id))
+
 			// ensure that we generate a correct key pairs for the user
-			assert((await getSigningKey(userKEK, db, actor as Actor)) instanceof CryptoKey)
+			const actor = await getActorById(db, row.id)
+			assert.ok(actor)
+			assert((await getSigningKey(userKEK, db, actor)) instanceof CryptoKey)
 		})
 
 		test('first login redirect relative URLs', async () => {
@@ -193,7 +210,7 @@ describe('Mastodon APIs', () => {
 				},
 			})
 			const res = await first_login.handlePostRequest(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 302)
+			await assertStatus(res, 302)
 
 			const location = res.headers.get('location')
 			assert.equal(location, 'https://example.com/a')
@@ -201,14 +218,25 @@ describe('Mastodon APIs', () => {
 
 		test('token error on unknown client', async () => {
 			const db = await makeDB()
-			const body = new URLSearchParams({ code: 'some-code' })
 
 			const req = new Request('https://example.com/oauth/token', {
 				method: 'POST',
-				body,
+				body: new URLSearchParams({
+					grant_type: 'authorization_code',
+					code: 'some-code',
+					client_id: 'unknown',
+					client_secret: 'unknown',
+					redirect_uri: 'https://example.com',
+				}),
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+				},
 			})
-			const res = await oauth_token.handleRequest(db, req)
-			assert.equal(res.status, 403)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const res = await oauth_token.onRequestPost({ request: req, env: { DATABASE: db } } as any)
+			await assertStatus(res, 401)
+			const body = await res.json<MastodonError>()
+			assert.ok(body.error.includes('invalid_client'))
 		})
 
 		test('token returns auth infos', async () => {
@@ -216,22 +244,55 @@ describe('Mastodon APIs', () => {
 			const testScope = 'test abcd'
 			const client = await createTestClient(db, 'https://localhost', testScope)
 
-			const body = new URLSearchParams({
-				code: client.id + '.some-code',
-			})
+			{
+				const req = new Request('https://example.com/oauth/token', {
+					method: 'POST',
+					body: new URLSearchParams({
+						grant_type: 'authorization_code',
+						code: client.id + '.some-code',
+						client_id: client.id,
+						client_secret: client.secret,
+						redirect_uri: client.redirect_uris,
+						scope: testScope,
+					}),
+					headers: {
+						'content-type': 'application/x-www-form-urlencoded',
+					},
+				})
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const res = await oauth_token.onRequestPost({ request: req, env: { DATABASE: db } } as any)
+				await assertStatus(res, 200)
+				assertCORS(res)
+				assertJSON(res)
 
-			const req = new Request('https://example.com/oauth/token', {
-				method: 'POST',
-				body,
-			})
-			const res = await oauth_token.handleRequest(db, req)
-			assert.equal(res.status, 200)
-			assertCORS(res)
-			assertJSON(res)
+				const data = await res.json<{ access_token: unknown; scope: unknown }>()
+				assert.equal(data.access_token, client.id + '.some-code')
+				assert.equal(data.scope, testScope)
+			}
+			{
+				const req = new Request('https://example.com/oauth/token', {
+					method: 'POST',
+					body: new URLSearchParams({
+						grant_type: 'client_credentials',
+						client_id: client.id,
+						client_secret: client.secret,
+						redirect_uri: client.redirect_uris,
+						scope: testScope,
+					}),
+					headers: {
+						'content-type': 'application/x-www-form-urlencoded',
+					},
+				})
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const res = await oauth_token.onRequestPost({ request: req, env: { DATABASE: db } } as any)
+				await assertStatus(res, 200)
+				assertCORS(res)
+				assertJSON(res)
 
-			const data = await res.json<any>()
-			assert.equal(data.access_token, client.id + '.some-code')
-			assert.equal(data.scope, testScope)
+				const data = await res.json<{ access_token: string; scope: unknown }>()
+				assert.deepEqual(client, await getClientByClientCredential(db, data.access_token))
+				assert.equal(data.scope, testScope)
+			}
 		})
 
 		test('token handles empty code', async () => {
@@ -241,18 +302,22 @@ describe('Mastodon APIs', () => {
 			const req = new Request('https://example.com/oauth/token', {
 				method: 'POST',
 				body,
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+				},
 			})
-			const res = await oauth_token.handleRequest(db, req)
-			assert.equal(res.status, 401)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const res = await oauth_token.onRequestPost({ request: req, env: { DATABASE: db } } as any)
+			await assertStatus(res, 401)
 		})
 
 		test('token returns CORS', async () => {
-			const db = await makeDB()
 			const req = new Request('https://example.com/oauth/token', {
 				method: 'OPTIONS',
 			})
-			const res = await oauth_token.handleRequest(db, req)
-			assert.equal(res.status, 200)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const res = await oauth_token.onRequestOptions({ request: req } as any)
+			await assertStatus(res, 200)
 			assertCORS(res)
 		})
 
@@ -262,7 +327,7 @@ describe('Mastodon APIs', () => {
 				method: 'OPTIONS',
 			})
 			const res = await oauth_authorize.handleRequestPost(req, db, userKEK, accessDomain, accessAud)
-			assert.equal(res.status, 200)
+			await assertStatus(res, 200)
 			assertCORS(res)
 		})
 
@@ -277,10 +342,16 @@ describe('Mastodon APIs', () => {
 				headers: {
 					'content-type': 'application/json',
 				},
-				body: '',
+				body: JSON.stringify({
+					grant_type: 'authorization_code',
+					client_id: client.id,
+					client_secret: client.secret,
+					redirect_uri: client.redirect_uris,
+				}),
 			})
-			const res = await oauth_token.handleRequest(db, req)
-			assert.equal(res.status, 200)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const res = await oauth_token.onRequestPost({ request: req, env: { DATABASE: db } } as any)
+			await assertStatus(res, 200)
 
 			const data = await res.json<any>()
 			assert.equal(data.access_token, code)

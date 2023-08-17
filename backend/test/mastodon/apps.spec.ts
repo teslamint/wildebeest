@@ -1,10 +1,12 @@
-import { makeDB, assertCORS, assertJSON, createTestClient, generateVAPIDKeys } from '../utils'
-import { TEST_JWT } from '../test-data'
 import { strict as assert } from 'node:assert/strict'
+
+import { createClientCredential } from 'wildebeest/backend/src/mastodon/client'
+import { VAPIDPublicKey } from 'wildebeest/backend/src/mastodon/subscription'
 import * as apps from 'wildebeest/functions/api/v1/apps'
 import * as verify_app from 'wildebeest/functions/api/v1/apps/verify_credentials'
-import { CredentialApp } from 'wildebeest/functions/api/v1/apps/verify_credentials'
-import { VAPIDPublicKey } from 'wildebeest/backend/src/mastodon/subscription'
+
+import { TEST_JWT } from '../test-data'
+import { assertCORS, assertJSON, assertStatus, createTestClient, generateVAPIDKeys, makeDB } from '../utils'
 
 describe('Mastodon APIs', () => {
 	describe('/apps', () => {
@@ -19,12 +21,16 @@ describe('Mastodon APIs', () => {
 				},
 			})
 
-			const res = await apps.handleRequest(db, request, vapidKeys)
-			assert.equal(res.status, 200)
+			const res = await apps.onRequestPost({
+				request,
+				env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 200)
 			assertCORS(res)
 			assertJSON(res)
 
-			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			// eslint-disable-next-line unused-imports/no-unused-vars
 			const { name, website, redirect_uri, client_id, client_secret, vapid_key, id, ...rest } = await res.json<
 				Record<string, string>
 			>()
@@ -47,12 +53,16 @@ describe('Mastodon APIs', () => {
 				},
 			})
 
-			const res = await apps.handleRequest(db, request, vapidKeys)
-			assert.equal(res.status, 200)
+			const res = await apps.onRequestPost({
+				request,
+				env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 200)
 			assertCORS(res)
 			assertJSON(res)
 
-			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			// eslint-disable-next-line unused-imports/no-unused-vars
 			const { name, redirect_uri, client_id, client_secret, vapid_key, id, ...rest } = await res.json<
 				Record<string, string>
 			>()
@@ -71,53 +81,48 @@ describe('Mastodon APIs', () => {
 
 			const validURIException = new Request('https://example.com', {
 				method: 'POST',
-				body: '{"redirect_uris":"urn:ietf:wg:oauth:2.0:oob","client_name":"Mastodon for iOS"}',
+				body: '{"redirect_uris":"urn:ietf:wg:oauth:2.0:oob","client_name":"Mastodon for iOS","scopes":"read write follow push"}',
 				headers: headers,
 			})
-			let res = await apps.handleRequest(db, validURIException, vapidKeys)
-			assert.equal(res.status, 200)
+			let res = await apps.onRequestPost({
+				request: validURIException,
+				env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 200)
 
 			const invalidURIRequest = new Request('https://example.com', {
 				method: 'POST',
 				body: '{"redirect_uris":"joinmastodon.org/oauth","client_name":"Mastodon for iOS"}',
 				headers: headers,
 			})
-			res = await apps.handleRequest(db, invalidURIRequest, vapidKeys)
-			assert.equal(res.status, 422)
+			res = await apps.onRequestPost({
+				request: invalidURIRequest,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 422)
 
 			const missingURIRequest = new Request('https://example.com', {
 				method: 'POST',
 				body: '{"client_name":"Mastodon for iOS"}',
 				headers: headers,
 			})
-			res = await apps.handleRequest(db, missingURIRequest, vapidKeys)
-			assert.equal(res.status, 422)
+			res = await apps.onRequestPost({
+				request: missingURIRequest,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 422)
 
 			const missingClientNameRequest = new Request('https://example.com', {
 				method: 'POST',
 				body: '{"redirect_uris":"joinmastodon.org/oauth"}',
 				headers: headers,
 			})
-			res = await apps.handleRequest(db, missingClientNameRequest, vapidKeys)
-			assert.equal(res.status, 422)
-		})
-
-		test('GET /apps is bad request', async () => {
-			const db = await makeDB()
-			const vapidKeys = await generateVAPIDKeys()
-			const request = new Request('https://example.com')
-			const ctx: any = {
-				next: () => new Response(),
-				data: null,
-				env: {
-					DATABASE: db,
-					VAPID_JWK: JSON.stringify(vapidKeys),
-				},
-				request,
-			}
-
-			const res = await apps.onRequest(ctx)
-			assert.equal(res.status, 405)
+			res = await apps.onRequestPost({
+				request: missingClientNameRequest,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 422)
 		})
 
 		test('GET /verify_credentials returns public VAPID key for known clients', async () => {
@@ -126,20 +131,41 @@ describe('Mastodon APIs', () => {
 			const client = await createTestClient(db, 'https://localhost', testScope)
 			const vapidKeys = await generateVAPIDKeys()
 
-			const headers = { authorization: 'Bearer ' + client.id + '.' + TEST_JWT }
+			{
+				const headers = { authorization: 'Bearer ' + client.id + '.' + TEST_JWT }
+				const req = new Request('https://example.com/api/v1/verify_credentials', { headers })
+				const res = await verify_app.onRequestGet({
+					request: req,
+					env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+				} as any)
+				await assertStatus(res, 200)
+				assertCORS(res)
+				assertJSON(res)
 
-			const req = new Request('https://example.com/api/v1/verify_credentials', { headers })
+				const jsonResponse = await res.json<{ name: unknown; website: unknown; vapid_key: unknown }>()
+				const publicVAPIDKey = VAPIDPublicKey(vapidKeys)
+				assert.equal(jsonResponse.name, 'test client')
+				assert.equal(jsonResponse.website, 'https://cloudflare.com')
+				assert.equal(jsonResponse.vapid_key, publicVAPIDKey)
+			}
+			{
+				const [secret] = await createClientCredential(db, client.id, client.scopes)
+				const headers = { authorization: 'Bearer ' + secret }
+				const req = new Request('https://example.com/api/v1/verify_credentials', { headers })
+				const res = await verify_app.onRequestGet({
+					request: req,
+					env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+				} as any)
+				await assertStatus(res, 200)
+				assertCORS(res)
+				assertJSON(res)
 
-			const res = await verify_app.handleRequest(db, req, vapidKeys)
-			assert.equal(res.status, 200)
-			assertCORS(res)
-			assertJSON(res)
-
-			const jsonResponse: CredentialApp = await res.json()
-			const publicVAPIDKey = VAPIDPublicKey(vapidKeys)
-			assert.equal(jsonResponse.name, 'test client')
-			assert.equal(jsonResponse.website, 'https://cloudflare.com')
-			assert.equal(jsonResponse.vapid_key, publicVAPIDKey)
+				const jsonResponse = await res.json<{ name: unknown; website: unknown; vapid_key: unknown }>()
+				const publicVAPIDKey = VAPIDPublicKey(vapidKeys)
+				assert.equal(jsonResponse.name, 'test client')
+				assert.equal(jsonResponse.website, 'https://cloudflare.com')
+				assert.equal(jsonResponse.vapid_key, publicVAPIDKey)
+			}
 		})
 
 		test('GET /verify_credentials returns 403 for unauthorized clients', async () => {
@@ -150,8 +176,11 @@ describe('Mastodon APIs', () => {
 
 			const req = new Request('https://example.com/api/v1/verify_credentials', { headers })
 
-			const res = await verify_app.handleRequest(db, req, vapidKeys)
-			assert.equal(res.status, 403)
+			const res = await verify_app.onRequestGet({
+				request: req,
+				env: { DATABASE: db, VAPID_JWK: JSON.stringify(vapidKeys) },
+			} as any)
+			await assertStatus(res, 401)
 		})
 	})
 })

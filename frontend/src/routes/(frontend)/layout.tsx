@@ -1,5 +1,5 @@
 import { component$, Slot, useContextProvider } from '@builder.io/qwik'
-import type { Env } from 'wildebeest/backend/src/types/env'
+import type { Env } from 'wildebeest/backend/src/types'
 import { DocumentHead, Link, loader$ } from '@builder.io/qwik-city'
 import * as instance from 'wildebeest/functions/api/v1/instance'
 import type { InstanceConfig } from 'wildebeest/backend/src/types/configs'
@@ -10,15 +10,18 @@ import { getCommitHash } from '~/utils/getCommitHash'
 import { InstanceConfigContext } from '~/utils/instanceConfig'
 import { getDocumentHead } from '~/utils/getDocumentHead'
 import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
+import { getDatabase } from 'wildebeest/backend/src/database'
 
 export const instanceLoader = loader$<Promise<InstanceConfig>>(async ({ platform, html }) => {
 	const env = {
 		INSTANCE_DESCR: platform.INSTANCE_DESCR,
 		INSTANCE_TITLE: platform.INSTANCE_TITLE,
 		ADMIN_EMAIL: platform.ADMIN_EMAIL,
+		DOMAIN: platform.DOMAIN,
 	} as Env
 	try {
-		const response = await instance.handleRequest('', env)
+		const database = await getDatabase(platform)
+		const response = await instance.handleRequest(env.DOMAIN, database, env)
 		const results = await response.text()
 		const json = JSON.parse(results) as InstanceConfig
 		return json

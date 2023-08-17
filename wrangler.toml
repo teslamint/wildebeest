@@ -3,13 +3,12 @@
 name = "wildebeest"
 main = "src/index.ts"
 compatibility_date = "2022-12-05"
-node_compat = true
+compatibility_flags = ['nodejs_compat']
 
 # Specify your account id here so that all commands run agains the correct account.
 # account_id = "<your account id>"
-
 [[d1_databases]]
 binding = "DATABASE"
 database_name = "wildebeest"
-# Replace this database_id with the id of the database created by `yarn deploy:init`.
+# Replace this database_id with the id of the database created by `npm run deploy:init`.
 database_id = "83821907-97fd-44b4-8f21-e3d6b736e7ef"

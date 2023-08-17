@@ -1,57 +1,68 @@
-import type { APObject } from 'wildebeest/backend/src/activitypub/objects'
+import type { ApObject } from 'wildebeest/backend/src/activitypub/objects'
+import { UA } from 'wildebeest/config/ua'
 
-export interface Collection<T> extends APObject {
+export interface Collection<T> extends ApObject {
 	totalItems: number
 	current?: string
-	first: URL
-	last: URL
+	first: string | URL | OrderedCollectionPage<T>
+	last: string | URL | OrderedCollectionPage<T>
 	items: Array<T>
 }
 
-export interface OrderedCollection<T> extends Collection<T> {}
+export type OrderedCollection<T> = Collection<T>
 
-export interface OrderedCollectionPage<T> extends APObject {
+export interface OrderedCollectionPage<T> extends ApObject {
 	next?: string
 	orderedItems: Array<T>
 }
 
 const headers = {
 	accept: 'application/activity+json',
+	'User-Agent': UA,
 }
 
-export async function getMetadata(url: URL): Promise<OrderedCollection<any>> {
+export async function getMetadata<T>(url: URL): Promise<OrderedCollection<T>> {
 	const res = await fetch(url, { headers })
 	if (!res.ok) {
 		throw new Error(`${url} returned ${res.status}`)
 	}
 
-	return res.json<OrderedCollection<any>>()
+	return res.json<OrderedCollection<T>>()
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function loadItems<T>(collection: OrderedCollection<T>, max?: number): Promise<Array<T>> {
-	// FIXME: implement max
-
+export async function loadItems<T>(collection: OrderedCollection<T>, limit: number): Promise<Array<T>> {
+	const totalItems = collection.totalItems
 	const items = []
-	let pageUrl = collection.first
+
+	let pageUrl: string
+	if (typeof collection.first === 'object') {
+		if (collection.first instanceof URL) {
+			pageUrl = collection.first.toString()
+		} else {
+			pageUrl = collection.first.id.toString()
+		}
+	} else {
+		pageUrl = collection.first
+	}
 
 	while (true) {
 		const page = await loadPage<T>(pageUrl)
 		if (page === null) {
-			break
+			return items
 		}
 		items.push(...page.orderedItems)
+		if (items.length >= limit || items.length >= totalItems) {
+			return items.slice(0, limit)
+		}
 		if (page.next) {
-			pageUrl = new URL(page.next)
+			pageUrl = page.next
 		} else {
-			break
+			return items
 		}
 	}
-
-	return items
 }
 
-export async function loadPage<T>(url: URL): Promise<null | OrderedCollectionPage<T>> {
+export async function loadPage<T>(url: string | URL): Promise<null | OrderedCollectionPage<T>> {
 	const res = await fetch(url, { headers })
 	if (!res.ok) {
 		console.warn(`${url} return ${res.status}`)

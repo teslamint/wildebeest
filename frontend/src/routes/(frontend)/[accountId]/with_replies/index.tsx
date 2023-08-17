@@ -4,26 +4,43 @@ import styles from '../../../../utils/innerHtmlContent.scss?inline'
 import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
 import type { MastodonStatus } from '~/types'
 import { StatusesPanel } from '~/components/StatusesPanel/StatusesPanel'
-import { getLocalStatuses } from 'wildebeest/functions/api/v1/accounts/[id]/statuses'
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
+import { handleRequest } from 'wildebeest/functions/api/v1/accounts/[id]/statuses'
 import { getDatabase } from 'wildebeest/backend/src/database'
+import { getMastodonIdByRemoteHandle } from 'wildebeest/backend/src/accounts/account'
+import { parseHandle } from 'wildebeest/backend/src/utils/handle'
+import { getNotFoundHtml } from '~/utils/getNotFoundHtml/getNotFoundHtml'
 
 export const statusesLoader = loader$<
 	Promise<{
-		accountId: string
+		mastodonId: string
 		statuses: MastodonStatus[]
 	}>
 >(async ({ platform, request, html }) => {
 	let statuses: MastodonStatus[] = []
-	let accountId = ''
+	let mastodonId: string | null = ''
 	try {
 		const url = new URL(request.url)
-		accountId = url.pathname.split('/')[1]
-
-		const handle = parseHandle(accountId)
-		accountId = handle.localPart
-		const response = await getLocalStatuses(request as Request, await getDatabase(platform), handle, 0, true)
-		statuses = await response.json<Array<MastodonStatus>>()
+		const handle = parseHandle(url.pathname.split('/')[1])
+		const db = await getDatabase(platform)
+		mastodonId = await getMastodonIdByRemoteHandle(db, {
+			localPart: handle.localPart,
+			domain: handle.domain ?? url.hostname,
+		})
+		if (mastodonId) {
+			const response = await handleRequest(
+				{ domain: url.hostname, db: await getDatabase(platform), connectedActor: undefined },
+				mastodonId,
+				{
+					// default values
+					limit: 20,
+					only_media: false,
+					exclude_replies: false,
+					exclude_reblogs: false,
+					pinned: false,
+				}
+			)
+			statuses = await response.json<Array<MastodonStatus>>()
+		}
 	} catch {
 		throw html(
 			500,
@@ -31,24 +48,26 @@ export const statusesLoader = loader$<
 		)
 	}
 
-	return { accountId, statuses: JSON.parse(JSON.stringify(statuses)) }
+	if (mastodonId === null) {
+		throw html(404, getNotFoundHtml())
+	}
+
+	return { mastodonId, statuses: JSON.parse(JSON.stringify(statuses)) }
 })
 
 export default component$(() => {
 	useStyles$(styles)
 
-	const { accountId, statuses } = statusesLoader().value
+	const { mastodonId, statuses } = statusesLoader().value
 
 	return (
 		<div data-testid="account-posts-and-replies">
 			<StatusesPanel
 				initialStatuses={statuses}
-				fetchMoreStatuses={$(async (numOfCurrentStatuses: number) => {
+				fetchMoreStatuses={$(async (maxId: string) => {
 					let statuses: MastodonStatus[] = []
 					try {
-						const response = await fetch(
-							`/api/v1/accounts/${accountId}/statuses?offset=${numOfCurrentStatuses}&with-replies=true`
-						)
+						const response = await fetch(`/api/v1/accounts/${mastodonId}/statuses?max_id=${maxId}`)
 						if (response.ok) {
 							const results = await response.text()
 							statuses = JSON.parse(results)

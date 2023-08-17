@@ -1,19 +1,19 @@
 // https://docs.joinmastodon.org/methods/accounts/#update_credentials
 
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
-import type { Queue, DeliverMessageBody } from 'wildebeest/backend/src/types/queue'
-import * as errors from 'wildebeest/backend/src/errors'
-import * as activities from 'wildebeest/backend/src/activitypub/activities/update'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { deliverFollowers } from 'wildebeest/backend/src/activitypub/deliver'
-import * as images from 'wildebeest/backend/src/media/image'
-import type { Env } from 'wildebeest/backend/src/types/env'
+import { createUpdateActivity } from 'wildebeest/backend/src/activitypub/activities/update'
 import type { Actor } from 'wildebeest/backend/src/activitypub/actors'
+import * as actors from 'wildebeest/backend/src/activitypub/actors'
 import { updateActorProperty } from 'wildebeest/backend/src/activitypub/actors'
+import { deliverFollowers } from 'wildebeest/backend/src/activitypub/deliver'
+import { getApId } from 'wildebeest/backend/src/activitypub/objects'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import * as errors from 'wildebeest/backend/src/errors'
+import { getPreference, loadLocalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
+import * as images from 'wildebeest/backend/src/media/image'
+import type { ContextData, DeliverMessageBody, Env, Queue } from 'wildebeest/backend/src/types'
 import type { CredentialAccount } from 'wildebeest/backend/src/types/account'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
-import { loadLocalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
+import { cors } from 'wildebeest/backend/src/utils/cors'
+import { actorToHandle } from 'wildebeest/backend/src/utils/handle'
 
 const headers = {
 	...cors(),
@@ -52,6 +52,7 @@ export async function handleRequest(
 	}
 
 	const domain = new URL(request.url).hostname
+	const actorId = getApId(connectedActor)
 
 	// update actor
 	{
@@ -59,12 +60,12 @@ export async function handleRequest(
 
 		if (formData.has('display_name')) {
 			const value = formData.get('display_name')!
-			await updateActorProperty(db, connectedActor.id, 'name', value as string)
+			await updateActorProperty(db, actorId, 'name', value as string)
 		}
 
 		if (formData.has('note')) {
 			const value = formData.get('note')!
-			await updateActorProperty(db, connectedActor.id, 'summary', value as string)
+			await updateActorProperty(db, actorId, 'summary', value as string)
 		}
 
 		if (formData.has('avatar')) {
@@ -72,7 +73,7 @@ export async function handleRequest(
 
 			const config = { accountId, apiToken }
 			const url = await images.uploadAvatar(value, config)
-			await updateActorProperty(db, connectedActor.id, 'icon.url', url.toString())
+			await updateActorProperty(db, actorId, 'icon.url', url.toString())
 		}
 
 		if (formData.has('header')) {
@@ -80,26 +81,29 @@ export async function handleRequest(
 
 			const config = { accountId, apiToken }
 			const url = await images.uploadHeader(value, config)
-			await updateActorProperty(db, connectedActor.id, 'image.url', url.toString())
+			await updateActorProperty(db, actorId, 'image.url', url.toString())
 		}
+
+		// TODO: update preferences
 	}
 
 	// reload the current user and sent back updated infos
 	{
-		const actor = await actors.getActorById(db, connectedActor.id)
+		const actor = await actors.getActorById(db, actorId)
 		if (actor === null) {
 			return errors.notAuthorized('user not found')
 		}
-		const user = await loadLocalMastodonAccount(db, actor)
+		const user = await loadLocalMastodonAccount(db, actor, { ...actorToHandle(actor), domain: null })
+		const preference = await getPreference(db, actor)
 
 		const res: CredentialAccount = {
 			...user,
 			source: {
 				note: user.note,
 				fields: user.fields,
-				privacy: 'public',
-				sensitive: false,
-				language: 'en',
+				privacy: preference.posting_default_visibility,
+				sensitive: preference.posting_default_sensitive,
+				language: preference.posting_default_language ?? '',
 				follow_requests_count: 0,
 			},
 			role: {
@@ -115,7 +119,7 @@ export async function handleRequest(
 		}
 
 		// send updates
-		const activity = activities.create(domain, connectedActor, actor)
+		const activity = await createUpdateActivity(db, domain, connectedActor, actor)
 		await deliverFollowers(db, userKEK, connectedActor, activity, queue)
 
 		return new Response(JSON.stringify(res), { headers })

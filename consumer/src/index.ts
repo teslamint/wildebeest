@@ -1,10 +1,11 @@
-import type { MessageBody, InboxMessageBody, DeliverMessageBody } from 'wildebeest/backend/src/types/queue'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
 import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { MessageType } from 'wildebeest/backend/src/types/queue'
-import { initSentryQueue } from './sentry'
-import { handleInboxMessage } from './inbox'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import type { DeliverMessageBody, InboxMessageBody, MessageBody } from 'wildebeest/backend/src/types'
+import { MessageType } from 'wildebeest/backend/src/types'
+
 import { handleDeliverMessage } from './deliver'
+import { handleInboxMessage } from './inbox'
+import { initSentryQueue } from './sentry'
 
 export type Env = {
 	DATABASE: Database
@@ -15,8 +16,6 @@ export type Env = {
 	SENTRY_DSN: string
 	SENTRY_ACCESS_CLIENT_ID: string
 	SENTRY_ACCESS_CLIENT_SECRET: string
-
-	NEON_DATABASE_URL?: string
 }
 
 export default {

@@ -9,10 +9,10 @@ import { HtmlContent } from '~/components/HtmlContent/HtmlContent'
 import { Account } from '~/types'
 import { getDocumentHead } from '~/utils/getDocumentHead'
 import { instanceLoader } from '../layout'
-import { emailSymbol } from 'wildebeest/backend/src/activitypub/actors'
 import { loadLocalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
 import { AccountCard } from '~/components/AccountCard/AccountCard'
-import { getAdmins } from 'wildebeest/backend/src/utils/auth/getAdmins'
+import { actorToHandle } from 'wildebeest/backend/src/utils/handle'
+import { getAdminByEmail } from 'wildebeest/backend/src/accounts'
 
 type AboutInfo = {
 	image: string
@@ -30,14 +30,15 @@ export const aboutInfoLoader = loader$<Promise<AboutInfo>>(async ({ resolveValue
 	const database = await getDatabase(platform)
 	const brandingData = await getSettings(database)
 	const rules = await getRules(database)
-	const admins = await getAdmins(database)
+	const adminPerson = await getAdminByEmail(database, platform.ADMIN_EMAIL)
 	let adminAccount: Account | null = null
-
-	const adminPerson = admins.find((admin) => admin[emailSymbol] === platform.ADMIN_EMAIL)
 
 	if (adminPerson) {
 		try {
-			adminAccount = (await loadLocalMastodonAccount(database, adminPerson)) as Account
+			adminAccount = (await loadLocalMastodonAccount(database, adminPerson, {
+				...actorToHandle(adminPerson),
+				domain: null,
+			})) as Account
 		} catch {
 			/* empty */
 		}
@@ -47,7 +48,7 @@ export const aboutInfoLoader = loader$<Promise<AboutInfo>>(async ({ resolveValue
 		image: instance.thumbnail,
 		domain: getDomain(request.url),
 		admin: { account: JSON.parse(JSON.stringify(adminAccount)), email: platform.ADMIN_EMAIL },
-		rules: JSON.parse(JSON.stringify(rules.sort(({ id: idA }, { id: idB }) => idA - idB))),
+		rules: JSON.parse(JSON.stringify(rules.sort(({ id: idA }, { id: idB }) => parseInt(idA) - parseInt(idB)))),
 		extended_description: {
 			content: brandingData?.['extended description'] ?? '',
 		},

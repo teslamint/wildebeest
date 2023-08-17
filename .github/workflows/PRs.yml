@@ -1,7 +1,21 @@
 name: Pull request checks
 on:
   push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/workflows/**'
+      - '!.github/workflows/PRs.yml'
+      - '*.md'
+      - 'docs/**'
+      - 'renovate.json'
   pull_request:
+    paths-ignore:
+      - '.github/workflows/**'
+      - '!.github/workflows/PRs.yml'
+      - '*.md'
+      - 'docs/**'
+      - 'renovate.json'
 
 # This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
@@ -10,70 +24,128 @@ concurrency:
 
 jobs:
   test-api:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1/3, 2/3, 3/3]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Setup node
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+      - uses: pnpm/action-setup@v2
         with:
-          node-version: 16.13.x
+          version: 8
+      - uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3
+        with:
+          node-version-file: .node-version
+          cache: pnpm
 
       - name: Install
-        run: yarn
+        run: pnpm install
 
       - name: Build
-        run: yarn build
+        run: npm run build
 
       - name: Run API tests
-        run: yarn test
+        run: npm run test -- --shard ${{ matrix.shard }}
 
   lint:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Setup node
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+      - uses: pnpm/action-setup@v2
         with:
-          node-version: 16.13.x
+          version: 8
+      - uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3
+        with:
+          node-version-file: .node-version
+          cache: pnpm
 
       - name: Install
-        run: yarn && yarn --cwd frontend
+        run: pnpm install && pnpm --dir frontend install
 
       - name: Check formatting
-        run: yarn pretty
+        run: npm run pretty
 
       - name: Check backend linting
-        run: yarn lint:backend
+        run: npm run lint:backend
+
+      - name: Check consumer linting
+        run: npm run lint:consumer
 
       - name: Check functions linting
-        run: yarn lint:functions
+        run: npm run lint:functions
 
       - name: Check frontend linting
-        run: yarn lint:frontend
+        run: npm run lint:frontend
 
       - name: Check frontend types
-        run: yarn --cwd types-check
+        working-directory: frontend
+        run: npm run types-check
+
+      - name: Checkout shuymn/sqldef
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+        with:
+          repository: shuymn/sqldef
+          ref: refs/heads/support-sqlite3-trigger
+          path: sqldef
+
+      - name: Setup Go
+        uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4
+        with:
+          cache-dependency-path: sqldef/go.sum
+          go-version-file: sqldef/go.mod
+
+      - name: Build sqlite3def
+        working-directory: sqldef
+        run: go build -o ../sqlite3def ./cmd/sqlite3def
+
+      - name: Check DB schema
+        run: |
+          DB_ID=$(yq --output-format json wrangler.toml | jq --raw-output --exit-status '.d1_databases | first | .database_id')
+          npm run database:migrate -- --local
+          ./sqlite3def --enable-drop-table --config sqldef.yml --dry-run \
+            ".wrangler/state/v3/d1/${DB_ID:?}/db.sqlite" < schema.sql | head -n 1 | grep -E '^-- Nothing is modified --$'
 
   test-ui:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Setup node
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+      - uses: pnpm/action-setup@v2
         with:
-          node-version: 16.13.x
+          version: 8
+      - uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
       - name: Install dependencies
-        run: yarn
+        run: pnpm install
+
       - name: Run App in the background
-        run: yarn ci-dev-test-ui &
-      - name: Install Playwright Browsers
-        run: yarn playwright install --with-deps
+        run: npm run ci-dev-test-ui &
+
+      - name: Store Playwright version
+        run: |
+          PLAYWRIGHT_VERSION=$(pnpm ls @playwright/test --json | jq --exit-status --raw-output 'first | .devDependencies["@playwright/test"].version')
+          echo "Playwright version: ${PLAYWRIGHT_VERSION}"
+          echo "PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}" >> $GITHUB_ENV
+
+      - name: Cache Playwright
+        id: cache-playwright-browsers
+        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3
+        with:
+          path: /home/runner/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ runner.arch }}-${{ env.PLAYWRIGHT_VERSION }}
+
+      - name: Download Playwright browsers
+        run: npx playwright install --with-deps
+
       - name: Run Playwright tests
-        run: yarn playwright test
-      - uses: actions/upload-artifact@v3
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3
         if: always()
         with:
           name: playwright-report

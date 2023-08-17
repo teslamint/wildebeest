@@ -5,24 +5,24 @@ import StickyHeader from '~/components/StickyHeader/StickyHeader'
 import { formatDateTime } from '~/utils/dateTime'
 import { formatRoundedNumber } from '~/utils/numbers'
 import styles from '../../../utils/innerHtmlContent.scss?inline'
-import { getAccount } from 'wildebeest/backend/src/accounts/getAccount'
+import { getAccount } from 'wildebeest/backend/src/accounts/account'
 import { getNotFoundHtml } from '~/utils/getNotFoundHtml/getNotFoundHtml'
 import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
 import { getDocumentHead } from '~/utils/getDocumentHead'
 import * as statusAPI from 'wildebeest/functions/api/v1/statuses/[id]'
-import { useAccountUrl } from '~/utils/useAccountUrl'
 import { getDatabase } from 'wildebeest/backend/src/database'
 import { Person } from 'wildebeest/backend/src/activitypub/actors'
 
 export const accountPageLoader = loader$<
 	Promise<{ account: MastodonAccount; accountHandle: string; isValidStatus: boolean }>
 >(async ({ platform, params, request, html }) => {
+	const domain = platform.DOMAIN
+
 	let isValidStatus = false
 	let account: MastodonAccount | null = null
 	try {
 		const url = new URL(request.url)
-		const domain = url.hostname
-		const accountId = url.pathname.split('/')[1]
+		const acct = url.pathname.split('/')[1]
 
 		try {
 			const statusResponse = await statusAPI.handleRequestGet(
@@ -37,7 +37,7 @@ export const accountPageLoader = loader$<
 			isValidStatus = false
 		}
 
-		account = await getAccount(domain, accountId, await getDatabase(platform))
+		account = await getAccount(domain, await getDatabase(platform), acct)
 	} catch {
 		throw html(
 			500,
@@ -49,9 +49,8 @@ export const accountPageLoader = loader$<
 		throw html(404, getNotFoundHtml())
 	}
 
-	const accountDomain = getAccountDomain(account)
-
-	const accountHandle = `@${account.acct}${accountDomain ? `@${accountDomain}` : ''}`
+	const isLocal = new URL(account.url).hostname === domain
+	const accountHandle = isLocal ? `${account.acct}@${domain}` : account.acct
 
 	return { account, accountHandle, isValidStatus }
 })
@@ -88,7 +87,7 @@ export default component$(() => {
 		},
 	]
 
-	const accountUrl = useAccountUrl(pageDetails.account)
+	const accountUrl = `/@${pageDetails.account.acct}`
 
 	const tabLinks = [
 		{

@@ -1,4 +1,6 @@
-export async function getResultsField(statement: D1PreparedStatement, fieldName: string): Promise<Array<string>> {
+import { PreparedStatement } from 'wildebeest/backend/src/database'
+
+export async function getResultsField(statement: PreparedStatement, fieldName: string): Promise<Array<string>> {
 	const out: D1Result<Record<string, string>> = await statement.all()
 
 	if (!out.success) {

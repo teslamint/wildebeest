@@ -1,9 +1,9 @@
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
-import type { Env } from 'wildebeest/backend/src/types/env'
+import { getUserId } from 'wildebeest/backend/src/accounts'
 import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { actorURL } from 'wildebeest/backend/src/activitypub/actors'
-import { getFollowers } from 'wildebeest/backend/src/mastodon/follow'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import { getFollowerIds } from 'wildebeest/backend/src/mastodon/follow'
+import type { Env } from 'wildebeest/backend/src/types'
+import { isLocalHandle, parseHandle } from 'wildebeest/backend/src/utils/handle'
 
 const headers = {
 	'content-type': 'application/json; charset=utf-8',
@@ -17,17 +17,17 @@ export const onRequest: PagesFunction<Env, any> = async ({ params, request, env 
 export async function handleRequest(domain: string, db: Database, id: string): Promise<Response> {
 	const handle = parseHandle(id)
 
-	if (handle.domain !== null) {
+	if (!isLocalHandle(handle)) {
 		return new Response('', { status: 403 })
 	}
 
-	const actorId = actorURL(domain, handle.localPart)
+	const actorId = getUserId(domain, handle)
 	const actor = await actors.getActorById(db, actorId)
 	if (actor === null) {
 		return new Response('', { status: 404 })
 	}
 
-	const followers = await getFollowers(db, actor)
+	const followers = await getFollowerIds(db, actor)
 
 	const out = {
 		'@context': 'https://www.w3.org/ns/activitystreams',

@@ -1,27 +1,32 @@
 // https://docs.joinmastodon.org/methods/accounts/#verify_credentials
 
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import { loadLocalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import * as errors from 'wildebeest/backend/src/errors'
-import type { CredentialAccount } from 'wildebeest/backend/src/types/account'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
 import { getDatabase } from 'wildebeest/backend/src/database'
+import * as errors from 'wildebeest/backend/src/errors'
+import { getPreference, loadLocalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
+import type { ContextData, Env } from 'wildebeest/backend/src/types'
+import type { CredentialAccount } from 'wildebeest/backend/src/types/account'
+import { cors } from 'wildebeest/backend/src/utils/cors'
+import { actorToHandle } from 'wildebeest/backend/src/utils/handle'
 
 export const onRequest: PagesFunction<Env, any, ContextData> = async ({ data, env }) => {
 	if (!data.connectedActor) {
 		return errors.notAuthorized('no connected user')
 	}
-	const user = await loadLocalMastodonAccount(await getDatabase(env), data.connectedActor)
+	const db = await getDatabase(env)
+	const user = await loadLocalMastodonAccount(db, data.connectedActor, {
+		...actorToHandle(data.connectedActor),
+		domain: null,
+	})
+	const preference = await getPreference(db, data.connectedActor)
 
 	const res: CredentialAccount = {
 		...user,
 		source: {
 			note: user.note,
 			fields: user.fields,
-			privacy: 'public',
-			sensitive: false,
-			language: 'en',
+			privacy: preference.posting_default_visibility,
+			sensitive: preference.posting_default_sensitive,
+			language: preference.posting_default_language ?? '',
 			follow_requests_count: 0,
 		},
 		role: {

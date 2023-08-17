@@ -7,32 +7,44 @@ export interface MastodonAccount {
 	url: string
 	display_name: string
 	note: string
-
 	avatar: string
 	avatar_static: string
-
 	header: string
 	header_static: string
-
+	locked: boolean
+	fields: Array<Field>
+	emojis: Array<CustomEmoji>
+	bot: boolean
+	group: boolean
+	discoverable: boolean | null
+	noindex?: boolean | null
+	moved?: MastodonAccount | null
+	suspended?: boolean
+	limited?: boolean
 	created_at: string
-
-	locked?: boolean
-	bot?: boolean
-	discoverable?: boolean
-	group?: boolean
-
+	last_status_at: string | null
+	statuses_count: number
 	followers_count: number
 	following_count: number
-	statuses_count: number
-
-	emojis: Array<any>
-	fields: Array<Field>
 }
 
 // https://docs.joinmastodon.org/entities/Relationship/
 // https://github.com/mastodon/mastodon-android/blob/master/mastodon/src/main/java/org/joinmastodon/android/model/Relationship.java
 export type Relationship = {
 	id: string
+	following: boolean
+	showing_reblogs: boolean
+	notifying: boolean
+	languages?: string[]
+	followed_by: boolean
+	blocking: boolean
+	blocked_by: boolean
+	muting: boolean
+	muting_notifications: boolean
+	requested: boolean
+	domain_blocking: boolean
+	endorsed: boolean
+	note: string
 }
 
 export type Privacy = 'public' | 'unlisted' | 'private' | 'direct'
@@ -67,4 +79,22 @@ export type Field = {
 	name: string
 	value: string
 	verified_at?: string
+}
+
+export type ReadingExpandMedia = 'default' | 'show_all' | 'hide_all'
+
+export type Preference = {
+	posting_default_visibility: Privacy
+	posting_default_sensitive: boolean
+	posting_default_language: string | null
+	reading_expand_media: ReadingExpandMedia
+	reading_expand_spoilers: boolean
+}
+
+export type CustomEmoji = {
+	shortcode: string
+	url: string
+	static_url: string
+	visible_in_picker: boolean
+	category: string
 }

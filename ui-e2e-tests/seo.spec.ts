@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { expect, Page, test } from '@playwright/test'
 
 test.describe('Presence of appropriate SEO metadata across the application', () => {
 	test('in explore page', async ({ page }) => {
@@ -45,17 +45,17 @@ test.describe('Presence of appropriate SEO metadata across the application', () 
 			title: "Raffa123$: I'm Rafael and I am a web desi… - Wildebeest",
 			description: "I'm Rafael and I am a web designer! 💪💪",
 			ogType: 'article',
-			ogUrl: /https:\/\/127.0.0.1\/@Rafael\/[\w-]*\/?/,
+			ogUrl: /https:\/\/0.0.0.0\/@Rafael\/[\w-]*\/?/,
 			ogImage: 'https://cloudflare-ipfs.com/ipfs/Qmd3W5DuhgHirLHGVixi6V76LhCkZUz6pnFt5AJBiyvHye/avatar/157.jpg',
 		})
 
 		await page.goto('http://127.0.0.1:8788/explore')
-		await page.locator('article').filter({ hasText: 'Ben, just Ben' }).locator('i.fa-globe + span').click()
+		await page.locator('article').filter({ hasText: 'Ben, just Ben' }).locator('i.fa-globe + span').nth(1).click()
 		await checkPageSeoData(page, {
 			title: 'Ben, just Ben: A very simple update: all good… - Wildebeest',
 			description: 'A very simple update: all good!',
 			ogType: 'article',
-			ogUrl: /https:\/\/127.0.0.1\/@Ben\/[\w-]*\/?/,
+			ogUrl: /https:\/\/0.0.0.0\/@Ben\/[\w-]*\/?/,
 			ogImage: 'https://cloudflare-ipfs.com/ipfs/Qmd3W5DuhgHirLHGVixi6V76LhCkZUz6pnFt5AJBiyvHye/avatar/1148.jpg',
 		})
 	})
@@ -63,7 +63,7 @@ test.describe('Presence of appropriate SEO metadata across the application', () 
 	test('in account page', async ({ page }) => {
 		await page.goto('http://127.0.0.1:8788/@Ben')
 		await checkPageSeoData(page, {
-			title: 'Ben, just Ben (@Ben@0.0.0.0) - Wildebeest',
+			title: 'Ben, just Ben (Ben@0.0.0.0) - Wildebeest',
 			description: 'Ben, just Ben account page - Wildebeest',
 			ogType: 'article',
 			ogUrl: 'https://0.0.0.0/@Ben',

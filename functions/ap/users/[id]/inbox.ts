@@ -1,16 +1,15 @@
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
-import { getVAPIDKeys } from 'wildebeest/backend/src/config'
-import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { actorURL } from 'wildebeest/backend/src/activitypub/actors'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import type { InboxMessageBody } from 'wildebeest/backend/src/types/queue'
-import { MessageType } from 'wildebeest/backend/src/types/queue'
+import { getUserId, isLocalAccount } from 'wildebeest/backend/src/accounts'
 import type { Activity } from 'wildebeest/backend/src/activitypub/activities'
+import * as actors from 'wildebeest/backend/src/activitypub/actors'
+import { getVAPIDKeys } from 'wildebeest/backend/src/config'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import type { Env, InboxMessageBody } from 'wildebeest/backend/src/types'
+import { MessageType } from 'wildebeest/backend/src/types'
+import { parseHandle } from 'wildebeest/backend/src/utils/handle'
+import { generateDigestHeader } from 'wildebeest/backend/src/utils/http-signing-cavage'
 import { parseRequest } from 'wildebeest/backend/src/utils/httpsigjs/parser'
 import { fetchKey, verifySignature } from 'wildebeest/backend/src/utils/httpsigjs/verifier'
-import { generateDigestHeader } from 'wildebeest/backend/src/utils/http-signing-cavage'
+import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
 
 export const onRequest: PagesFunction<Env, any> = async ({ params, request, env }) => {
 	try {
@@ -61,10 +60,10 @@ export async function handleRequest(
 ): Promise<Response> {
 	const handle = parseHandle(id)
 
-	if (handle.domain !== null && handle.domain !== domain) {
+	if (!isLocalAccount(domain, handle)) {
 		return new Response('', { status: 403 })
 	}
-	const actorId = actorURL(domain, handle.localPart)
+	const actorId = getUserId(domain, handle)
 
 	const actor = await actors.getActorById(db, actorId)
 	if (actor === null) {

@@ -1,86 +1,87 @@
 // https://docs.joinmastodon.org/methods/accounts/#following
 
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
-import type { Handle } from 'wildebeest/backend/src/utils/parse'
-import { actorURL } from 'wildebeest/backend/src/activitypub/actors'
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import { loadExternalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
-import { urlToHandle } from 'wildebeest/backend/src/utils/handle'
-import { MastodonAccount } from 'wildebeest/backend/src/types/account'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
-import * as localFollow from 'wildebeest/backend/src/mastodon/follow'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import * as webfinger from 'wildebeest/backend/src/webfinger'
+import { isLocalAccount } from 'wildebeest/backend/src/accounts'
+import { Actor, getActorByMastodonId, getAndCache } from 'wildebeest/backend/src/activitypub/actors'
 import { getFollowing, loadActors } from 'wildebeest/backend/src/activitypub/actors/follow'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import { resourceNotFound } from 'wildebeest/backend/src/errors'
+import { loadMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
+import { getFollowingId } from 'wildebeest/backend/src/mastodon/follow'
+import type { ContextData, Env } from 'wildebeest/backend/src/types'
+import { MastodonAccount } from 'wildebeest/backend/src/types/account'
+import { cors, makeJsonResponse, MastodonApiResponse, readParams } from 'wildebeest/backend/src/utils'
+import { actorToHandle } from 'wildebeest/backend/src/utils/handle'
+import { z } from 'zod'
 
-export const onRequest: PagesFunction<Env, any, ContextData> = async ({ params, request, env }) => {
-	return handleRequest(request, await getDatabase(env), params.id as string)
+const schema = z.object({
+	limit: z.coerce.number().int().min(1).max(80).catch(40),
+})
+
+type Dependencies = {
+	domain: string
+	db: Database
 }
 
-export async function handleRequest(request: Request, db: Database, id: string): Promise<Response> {
-	const handle = parseHandle(id)
-	const domain = new URL(request.url).hostname
+type Parameters = z.infer<typeof schema>
 
-	if (handle.domain === null || (handle.domain !== null && handle.domain === domain)) {
-		// Retrieve the infos from a local user
-		return getLocalFollowing(request, handle, db)
-	} else if (handle.domain !== null) {
-		// Retrieve the infos of a remote actor
-		return getRemoteFollowing(request, handle, db)
-	} else {
-		return new Response('', { status: 403 })
-	}
+const headers = {
+	...cors(),
+	'content-type': 'application/json; charset=utf-8',
 }
 
-async function getRemoteFollowing(request: Request, handle: Handle, db: Database): Promise<Response> {
-	const acct = `${handle.localPart}@${handle.domain}`
-	const link = await webfinger.queryAcctLink(handle.domain!, acct)
-	if (link === null) {
-		return new Response('', { status: 404 })
+// TODO: support pagination
+export const onRequestGet: PagesFunction<Env, 'id', ContextData> = async ({ params: { id }, request, env }) => {
+	if (typeof id !== 'string') {
+		return resourceNotFound('id', String(id))
+	}
+	const result = await readParams(request, schema)
+	if (!result.success) {
+		throw new Error('failed to read params')
+	}
+	const url = new URL(request.url)
+	return handleRequest({ domain: url.hostname, db: await getDatabase(env) }, id, result.data)
+}
+
+export async function handleRequest(
+	{ domain, db }: Dependencies,
+	id: string,
+	params: Parameters
+): Promise<MastodonApiResponse<MastodonAccount[]>> {
+	const actor = await getActorByMastodonId(db, id)
+	if (!actor) {
+		return resourceNotFound('id', id)
+	}
+	return await get(domain, db, actor, params)
+}
+
+async function get(
+	domain: string,
+	db: Database,
+	actor: Actor,
+	params: Parameters
+): Promise<MastodonApiResponse<MastodonAccount[]>> {
+	if (isLocalAccount(domain, actorToHandle(actor))) {
+		const followingIds = await getFollowingId(db, actor, params.limit)
+		const promises: Promise<MastodonAccount>[] = []
+		for (const id of followingIds) {
+			try {
+				const followee = await getAndCache(new URL(id), db)
+				promises.push(loadMastodonAccount(db, domain, followee, actorToHandle(followee)))
+			} catch (err) {
+				if (err instanceof Error) {
+					console.warn(`failed to retrieve following (${id}): ${err.message}`)
+				}
+				throw err
+			}
+		}
+
+		return makeJsonResponse(await Promise.all(promises), { headers })
 	}
 
-	const actor = await actors.getAndCache(link, db)
-	const followingIds = await getFollowing(actor)
-	const following = await loadActors(db, followingIds)
-
-	const promises = following.map((actor) => {
-		const acct = urlToHandle(actor.id)
-		return loadExternalMastodonAccount(acct, actor, false)
+	const following = await loadActors(db, await getFollowing(actor, params.limit))
+	const promises = following.map((followee) => {
+		return loadMastodonAccount(db, domain, followee, actorToHandle(followee))
 	})
 
-	const out = await Promise.all(promises)
-	const headers = {
-		...cors(),
-		'content-type': 'application/json; charset=utf-8',
-	}
-	return new Response(JSON.stringify(out), { headers })
-}
-
-async function getLocalFollowing(request: Request, handle: Handle, db: Database): Promise<Response> {
-	const domain = new URL(request.url).hostname
-	const actorId = actorURL(domain, handle.localPart)
-	const actor = await actors.getAndCache(actorId, db)
-
-	const following = await localFollow.getFollowingId(db, actor)
-	const out: Array<MastodonAccount> = []
-
-	for (let i = 0, len = following.length; i < len; i++) {
-		const id = new URL(following[i])
-		const acct = urlToHandle(id)
-
-		try {
-			const actor = await actors.getAndCache(id, db)
-			out.push(await loadExternalMastodonAccount(acct, actor))
-		} catch (err: any) {
-			console.warn(`failed to retrieve following (${id}): ${err.message}`)
-		}
-	}
-
-	const headers = {
-		...cors(),
-		'content-type': 'application/json; charset=utf-8',
-	}
-	return new Response(JSON.stringify(out), { headers })
+	return makeJsonResponse(await Promise.all(promises), { headers })
 }

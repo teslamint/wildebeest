@@ -1,52 +1,63 @@
-import { defaultImages } from 'wildebeest/config/accounts'
-import { generateUserKey } from 'wildebeest/backend/src/utils/key-ops'
-import { type APObject, sanitizeContent, getTextContent } from '../objects'
+import {
+	type ApObject,
+	ApObjectId,
+	getApId,
+	getTextContent,
+	mastodonIdSymbol,
+	Remote,
+	sanitizeContent,
+} from 'wildebeest/backend/src/activitypub/objects'
 import { addPeer } from 'wildebeest/backend/src/activitypub/peers'
 import { type Database } from 'wildebeest/backend/src/database'
-import { Buffer } from 'buffer'
+import { MastodonId } from 'wildebeest/backend/src/types'
+import { isUUID } from 'wildebeest/backend/src/utils'
+import { adjustLocalHostDomain } from 'wildebeest/backend/src/utils/adjustLocalHostDomain'
+import { RemoteHandle } from 'wildebeest/backend/src/utils/handle'
+import { generateMastodonId } from 'wildebeest/backend/src/utils/id'
+import { defaultImages } from 'wildebeest/config/accounts'
+import { UA } from 'wildebeest/config/ua'
 
-const PERSON = 'Person'
-const isTesting = typeof jest !== 'undefined'
-export const emailSymbol = Symbol()
 export const isAdminSymbol = Symbol()
 
-export function actorURL(domain: string, id: string): URL {
-	return new URL(`/ap/users/${id}`, 'https://' + domain)
-}
-
 // https://www.w3.org/TR/activitystreams-vocabulary/#actor-types
-export interface Actor extends APObject {
+export interface Actor extends ApObject {
+	type: 'Person' | 'Service' | 'Organization' | 'Group' | 'Application'
 	inbox: URL
 	outbox: URL
 	following: URL
 	followers: URL
+	featured?: URL
+	discoverable: boolean
+	manuallyApprovesFollowers?: boolean
+	alsoKnownAs?: string[]
+	publicKey?: {
+		id: string
+		owner?: string
+		publicKeyPem: string
+	}
 
-	alsoKnownAs?: string
-
-	[emailSymbol]: string
-	[isAdminSymbol]: boolean
+	// Internal
+	[mastodonIdSymbol]: string
 }
+
+export const PERSON = 'Person'
 
 // https://www.w3.org/TR/activitystreams-vocabulary/#dfn-person
 export interface Person extends Actor {
-	publicKey: {
-		id: string
-		owner: URL
-		publicKeyPem: string
-	}
+	type: typeof PERSON
 }
 
-export async function get(url: string | URL): Promise<Actor> {
+export async function fetchActor(url: string | URL): Promise<Remote<Actor>> {
 	const headers = {
 		accept: 'application/activity+json',
+		'User-Agent': UA,
 	}
-	const res = await fetch(url.toString(), { headers })
+	const res = await fetch(url, { headers })
 	if (!res.ok) {
-		throw new Error(`${url} returned: ${res.status}`)
+		throw new Error(`${url.toString()} returned: ${res.status}`)
 	}
 
-	const data = await res.json<any>()
-	const actor: Actor = { ...data }
+	const actor = await res.json<Remote<Actor>>()
 	actor.id = new URL(actor.id)
 
 	if (actor.summary) {
@@ -74,14 +85,17 @@ export async function get(url: string | URL): Promise<Actor> {
 	if (actor.inbox !== undefined) {
 		actor.inbox = new URL(actor.inbox)
 	}
+	if (actor.outbox !== undefined) {
+		actor.outbox = new URL(actor.outbox)
+	}
 	if (actor.following !== undefined) {
 		actor.following = new URL(actor.following)
 	}
 	if (actor.followers !== undefined) {
 		actor.followers = new URL(actor.followers)
 	}
-	if (actor.outbox !== undefined) {
-		actor.outbox = new URL(actor.outbox)
+	if (actor.featured !== undefined) {
+		actor.featured = new URL(actor.featured)
 	}
 
 	return actor
@@ -96,122 +110,70 @@ export async function getAndCache(url: URL, db: Database): Promise<Actor> {
 		}
 	}
 
-	const actor = await get(url)
+	const actor = await fetchActor(url)
 	if (!actor.type || !actor.id) {
 		throw new Error('missing fields on Actor')
 	}
 
 	const properties = actor
 
-	const sql = `
-  INSERT INTO actors (id, type, properties)
-  VALUES (?, ?, ?)
-  `
-
-	const { success, error } = await db
-		.prepare(sql)
-		.bind(actor.id.toString(), actor.type, JSON.stringify(properties))
-		.run()
-	if (!success) {
-		throw new Error('SQL error: ' + error)
-	}
-
-	// Add peer
-	{
-		const domain = actor.id.host
-		await addPeer(db, domain)
-	}
-	return actor
-}
-
-export async function getPersonByEmail(db: Database, email: string): Promise<Person | null> {
-	const stmt = db.prepare('SELECT * FROM actors WHERE email=? AND type=?').bind(email, PERSON)
-	const { results } = await stmt.all()
-	if (!results || results.length === 0) {
-		return null
-	}
-	const row: any = results[0]
-	return personFromRow(row)
-}
-
-type PersonProperties = {
-	name?: string
-	summary?: string
-	icon?: { url: string }
-	image?: { url: string }
-	preferredUsername?: string
-
-	inbox?: string
-	outbox?: string
-	following?: string
-	followers?: string
-}
-
-// Create a local user
-export async function createPerson(
-	domain: string,
-	db: Database,
-	userKEK: string,
-	email: string,
-	properties: PersonProperties = {},
-	admin: boolean = false
-): Promise<Person> {
-	const userKeyPair = await generateUserKey(userKEK)
-
-	let privkey, salt
-	// Since D1 and better-sqlite3 behaviors don't exactly match, presumable
-	// because Buffer support is different in Node/Worker. We have to transform
-	// the values depending on the platform.
-	if (isTesting || db.client === 'neon') {
-		privkey = Buffer.from(userKeyPair.wrappedPrivKey)
-		salt = Buffer.from(userKeyPair.salt)
-	} else {
-		privkey = [...new Uint8Array(userKeyPair.wrappedPrivKey)]
-		salt = [...new Uint8Array(userKeyPair.salt)]
-	}
-
-	if (properties.preferredUsername === undefined) {
-		const parts = email.split('@')
-		properties.preferredUsername = parts[0]
-	}
-
-	if (properties.preferredUsername !== undefined && typeof properties.preferredUsername !== 'string') {
-		throw new Error(
-			`preferredUsername should be a string, received ${JSON.stringify(properties.preferredUsername)} instead`
-		)
-	}
-
-	const id = actorURL(domain, properties.preferredUsername).toString()
-
-	if (properties.inbox === undefined) {
-		properties.inbox = id + '/inbox'
-	}
-
-	if (properties.outbox === undefined) {
-		properties.outbox = id + '/outbox'
-	}
-
-	if (properties.following === undefined) {
-		properties.following = id + '/following'
-	}
-
-	if (properties.followers === undefined) {
-		properties.followers = id + '/followers'
-	}
+	const now = new Date()
+	const mastodonId = await generateMastodonId(db, 'actors', now)
+	const actorId = getApId(actor.id)
 
 	const row = await db
 		.prepare(
 			`
-              INSERT INTO actors(id, type, email, pubkey, privkey, privkey_salt, properties, is_admin)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-              RETURNING *
-          `
+INSERT INTO actors (id, mastodon_id, domain, properties, cdate, type, username)
+VALUES (?, ?, ?, ?, ?, ?, lower(?))
+RETURNING type
+    `
 		)
-		.bind(id, PERSON, email, userKeyPair.pubKey, privkey, salt, JSON.stringify(properties), admin ? 1 : null)
-		.first()
+		.bind(
+			actorId.toString(),
+			mastodonId,
+			actorId.hostname,
+			JSON.stringify(properties),
+			now.toISOString(),
+			properties.type,
+			properties.preferredUsername ?? null
+		)
+		.first<{ type: Actor['type'] }>()
+	if (!row) {
+		throw new Error('failed to insert actor')
+	}
 
-	return personFromRow(row)
+	// Add peer
+	await addPeer(db, getApId(actor.id).host)
+
+	return actorFromRow({
+		id: actorId.toString(),
+		mastodon_id: mastodonId,
+		type: row.type,
+		properties: actor,
+		cdate: now.toISOString(),
+	})
 }
+
+export type ActorProperties = Pick<
+	Remote<Actor>,
+	| 'url'
+	| 'name'
+	| 'summary'
+	| 'icon'
+	| 'image'
+	| 'preferredUsername'
+	| 'inbox'
+	| 'outbox'
+	| 'following'
+	| 'followers'
+	| 'featured'
+	| 'alsoKnownAs'
+	| 'discoverable'
+	| 'publicKey'
+	| 'manuallyApprovesFollowers'
+	| 'sensitive'
+>
 
 export async function updateActorProperty(db: Database, actorId: URL, key: string, value: string) {
 	const { success, error } = await db
@@ -224,116 +186,192 @@ export async function updateActorProperty(db: Database, actorId: URL, key: strin
 }
 
 export async function setActorAlias(db: Database, actorId: URL, alias: URL) {
-	if (db.client === 'neon') {
-		const { success, error } = await db
-			.prepare(`UPDATE actors SET properties=${db.qb.jsonSet('properties', 'alsoKnownAs,0', '?1')} WHERE id=?2`)
-			.bind('"' + alias.toString() + '"', actorId.toString())
-			.run()
-		if (!success) {
-			throw new Error('SQL error: ' + error)
-		}
-	} else {
-		const { success, error } = await db
-			.prepare(
-				`UPDATE actors SET properties=${db.qb.jsonSet('properties', 'alsoKnownAs', 'json_array(?1)')} WHERE id=?2`
-			)
-			.bind(alias.toString(), actorId.toString())
-			.run()
-		if (!success) {
-			throw new Error('SQL error: ' + error)
-		}
+	const { success, error } = await db
+		.prepare(`UPDATE actors SET properties=${db.qb.jsonSet('properties', 'alsoKnownAs', 'json_array(?1)')} WHERE id=?2`)
+		.bind(alias.toString(), actorId.toString())
+		.run()
+	if (!success) {
+		throw new Error('SQL error: ' + error)
 	}
 }
 
-export async function getActorById(db: Database, id: URL): Promise<Actor | null> {
-	const stmt = db.prepare('SELECT * FROM actors WHERE id=?').bind(id.toString())
-	const { results } = await stmt.all()
+export async function ensureActorMastodonId(db: Database, mastodonId: string, cdate: string): Promise<MastodonId> {
+	if (!isUUID(mastodonId)) {
+		return mastodonId
+	}
+	const newMastodonId = await generateMastodonId(db, 'actors', new Date(cdate))
+	const { success, error } = await db
+		.prepare(`UPDATE actors SET mastodon_id=?1 WHERE mastodon_id=?2`)
+		.bind(newMastodonId, mastodonId)
+		.run()
+	if (!success) {
+		throw new Error('SQL error: ' + error)
+	}
+	return newMastodonId
+}
+
+type ActorRowLike = {
+	id: string
+	mastodon_id: string
+	type: Actor['type']
+	properties: string
+	cdate: string
+}
+
+export async function getActorByMastodonId(db: Database, id: MastodonId): Promise<Actor | null> {
+	const { results } = await db
+		.prepare(
+			`
+SELECT
+  id,
+  mastodon_id,
+  type,
+  properties,
+  cdate
+FROM actors
+WHERE mastodon_id=?1
+`
+		)
+		.bind(id)
+		.all<ActorRowLike>()
 	if (!results || results.length === 0) {
 		return null
 	}
-	const row: any = results[0]
-	return personFromRow(row)
+	return actorFromRow(results[0])
 }
 
-export function personFromRow(row: any): Person {
+export async function getActorById(db: Database, id: Actor['id']): Promise<Actor | null> {
+	const stmt = db
+		.prepare(
+			`
+SELECT
+  id,
+  mastodon_id,
+  type,
+  properties,
+  cdate
+FROM actors
+WHERE id=?1
+  `
+		)
+		.bind(id.toString())
+	const { results } = await stmt.all<ActorRowLike>()
+	if (!results || results.length === 0) {
+		return null
+	}
+	return actorFromRow({
+		...results[0],
+		mastodon_id: await ensureActorMastodonId(db, results[0].mastodon_id, results[0].cdate),
+	})
+}
+
+export async function getActorByRemoteHandle(db: Database, handle: RemoteHandle): Promise<Actor | null> {
+	const { results } = await db
+		.prepare(
+			`
+SELECT
+  id,
+  mastodon_id,
+  type,
+  properties,
+  cdate
+FROM actors
+WHERE username=lower(?1) AND domain=?2
+`
+		)
+		.bind(handle.localPart, adjustLocalHostDomain(handle.domain))
+		.all<ActorRowLike>()
+	if (!results || results.length === 0) {
+		return null
+	}
+	return actorFromRow({
+		...results[0],
+		mastodon_id: await ensureActorMastodonId(db, results[0].mastodon_id, results[0].cdate),
+	})
+}
+
+export type ActorRow<T extends Actor> = {
+	id: string
+	mastodon_id: string
+	type: T['type']
+	properties: ActorProperties | string
+	cdate: string
+	original_actor_id?: ApObjectId
+}
+
+export function actorFromRow<T extends Actor>(row: ActorRow<T>) {
 	let properties
 	if (typeof row.properties === 'object') {
 		// neon uses JSONB for properties which is returned as a deserialized
 		// object.
-		properties = row.properties as PersonProperties
+		properties = row.properties
 	} else {
 		// D1 uses a string for JSON properties
-		properties = JSON.parse(row.properties) as PersonProperties
+		properties = JSON.parse(row.properties) as ActorProperties
 	}
 
-	const icon = properties.icon ?? {
-		type: 'Image',
-		mediaType: 'image/jpeg',
-		url: new URL(defaultImages.avatar),
-		id: new URL(row.id + '#icon'),
-	}
-	const image = properties.image ?? {
-		type: 'Image',
-		mediaType: 'image/jpeg',
-		url: new URL(defaultImages.header),
-		id: new URL(row.id + '#image'),
-	}
-
-	const preferredUsername = properties.preferredUsername
+	const { preferredUsername } = properties
 	const name = properties.name ?? preferredUsername
 
-	let publicKey = null
-	if (row.pubkey !== null) {
+	let publicKey
+	if (properties.publicKey !== undefined && properties.publicKey.publicKeyPem !== undefined) {
 		publicKey = {
-			id: row.id + '#main-key',
-			owner: row.id,
-			publicKeyPem: row.pubkey,
+			id: properties.publicKey.id ?? new URL(row.id + '#main-key'),
+			publicKeyPem: properties.publicKey.publicKeyPem,
 		}
 	}
 
 	const id = new URL(row.id)
-
-	let domain = id.hostname
-	if (row.original_actor_id) {
-		domain = new URL(row.original_actor_id).hostname
-	}
-
 	// Old local actors weren't created with inbox/outbox/etc properties, so add
 	// them if missing.
-	{
-		if (properties.inbox === undefined) {
-			properties.inbox = id + '/inbox'
-		}
-
-		if (properties.outbox === undefined) {
-			properties.outbox = id + '/outbox'
-		}
-
-		if (properties.following === undefined) {
-			properties.following = id + '/following'
-		}
-
-		if (properties.followers === undefined) {
-			properties.followers = id + '/followers'
-		}
+	if (properties.inbox === undefined) {
+		properties.inbox = new URL(id + '/inbox')
+	}
+	if (properties.outbox === undefined) {
+		properties.outbox = new URL(id + '/outbox')
+	}
+	if (properties.following === undefined) {
+		properties.following = new URL(id + '/following')
+	}
+	if (properties.followers === undefined) {
+		properties.followers = new URL(id + '/followers')
 	}
 
 	return {
-		// Hidden values
-		[emailSymbol]: row.email,
-		[isAdminSymbol]: row.is_admin === 1,
-
-		...properties,
-		name,
-		icon,
-		image,
-		preferredUsername,
-		discoverable: true,
-		publicKey,
-		type: PERSON,
+		type: row.type,
 		id,
+		url: properties.url,
 		published: new Date(row.cdate).toISOString(),
+		icon: properties.icon ?? {
+			type: 'Image',
+			// TODO: stub values
+			mediaType: 'image/jpeg',
+			url: new URL(defaultImages.avatar),
+			id: new URL(row.id + '#icon'),
+		},
+		image: properties.image ?? {
+			type: 'Image',
+			mediaType: 'image/jpeg',
+			url: new URL(defaultImages.header),
+			id: new URL(row.id + '#image'),
+		},
+		summary: properties.summary ?? undefined,
+		name,
+		preferredUsername,
 
-		url: new URL('@' + preferredUsername, 'https://' + domain),
-	} as unknown as Person
+		// Actor specific
+		inbox: properties.inbox,
+		outbox: properties.outbox,
+		following: properties.following,
+		followers: properties.followers,
+		featured: properties.featured ?? undefined,
+		discoverable: properties.discoverable ?? false,
+		manuallyApprovesFollowers: properties.manuallyApprovesFollowers ?? false,
+		publicKey: publicKey ?? undefined,
+		alsoKnownAs: properties.alsoKnownAs ?? undefined,
+		sensitive: properties.sensitive ?? undefined,
+
+		// Hidden values
+		[mastodonIdSymbol]: row.mastodon_id,
+	}
 }

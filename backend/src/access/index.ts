@@ -51,10 +51,7 @@ export type PluginArgs = {
 // Adapted slightly from https://github.com/cloudflare/workers-access-external-auth-example
 const base64URLDecode = (s: string) => {
 	s = s.replace(/-/g, '+').replace(/_/g, '/').replace(/\s/g, '')
-	return new Uint8Array(
-		// @ts-ignore
-		Array.prototype.map.call(atob(s), (c: string) => c.charCodeAt(0))
-	)
+	return new Uint8Array([...atob(s)].map((c) => c.charCodeAt(0)))
 }
 
 const asciiToUint8Array = (s: string) => {
@@ -79,7 +76,7 @@ export function getPayload(jwt: string): JWTPayload {
 export const generateValidator =
 	({ domain, aud, jwt }: { domain: string; aud: string; jwt: string }) =>
 	async (
-		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		// eslint-disable-next-line unused-imports/no-unused-vars
 		request: Request
 	): Promise<{
 		payload: object

@@ -1,5 +1,5 @@
-import type { Queue, MessageBody } from 'wildebeest/backend/src/types/queue'
 import { type Database } from 'wildebeest/backend/src/database'
+import type { MessageBody, Queue } from 'wildebeest/backend/src/types'
 
 export interface Env {
 	DATABASE: Database
@@ -7,6 +7,7 @@ export interface Env {
 	userKEK: string
 	QUEUE: Queue<MessageBody>
 	DO_CACHE: DurableObjectNamespace
+	DOMAIN: string
 
 	CF_ACCOUNT_ID: string
 	CF_API_TOKEN: string
@@ -20,11 +21,8 @@ export interface Env {
 	ADMIN_EMAIL: string
 	INSTANCE_DESCR: string
 	VAPID_JWK: string
-	DOMAIN: string
 
 	SENTRY_DSN: string
 	SENTRY_ACCESS_CLIENT_ID: string
 	SENTRY_ACCESS_CLIENT_SECRET: string
-
-	NEON_DATABASE_URL?: string
 }

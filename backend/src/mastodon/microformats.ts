@@ -1,6 +1,5 @@
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
 import type { Actor } from 'wildebeest/backend/src/activitypub/actors'
-import { urlToHandle } from 'wildebeest/backend/src/utils/handle'
+import { actorToAcct, parseHandle } from 'wildebeest/backend/src/utils/handle'
 
 function tag(name: string, content: string, attrs: Record<string, string> = {}): string {
 	let htmlAttrs = ''
@@ -16,7 +15,7 @@ const mentionedEmailRegex = /(^|\s|\b|\W)@(\w+(?:[.-]?\w+)+@\w+(?:[.-]?\w+)+(?:\
 const tagRegex = /(^|\s|\b|\W)#(\w{2,63})(\b|\s|$)/g
 
 // Transform a text status into a HTML status; enriching it with links / mentions.
-export function enrichStatus(status: string, mentions: Array<Actor>): string {
+export function enrichStatus(status: string, mentions: Set<Actor>): string {
 	const anchorsPlaceholdersMap = new Map<string, string>()
 
 	const getLinkAnchorPlaceholder = (link: string) => {
@@ -34,8 +33,8 @@ export function enrichStatus(status: string, mentions: Array<Actor>): string {
 		)
 		.replace(mentionedEmailRegex, (_, matchPrefix: string, email: string, matchSuffix: string) => {
 			// ensure that the match is part of the mentions array
-			for (let i = 0, len = mentions.length; i < len; i++) {
-				if (email === urlToHandle(mentions[i].id)) {
+			for (const actor of mentions) {
+				if (email === actorToAcct(actor)) {
 					return `${matchPrefix}${getMentionSpan(email)}${matchSuffix}`
 				}
 			}

@@ -1,15 +1,14 @@
-import { getClientById } from 'wildebeest/backend/src/mastodon/client'
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import { getVAPIDKeys } from 'wildebeest/backend/src/config'
-import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
 import type { Actor } from 'wildebeest/backend/src/activitypub/actors'
-import { createSubscription, getSubscription } from 'wildebeest/backend/src/mastodon/subscription'
-import type { CreateRequest } from 'wildebeest/backend/src/mastodon/subscription'
-import { ContextData } from 'wildebeest/backend/src/types/context'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import * as errors from 'wildebeest/backend/src/errors'
-import { VAPIDPublicKey } from 'wildebeest/backend/src/mastodon/subscription'
+import { getVAPIDKeys } from 'wildebeest/backend/src/config'
 import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import * as errors from 'wildebeest/backend/src/errors'
+import { getClientById } from 'wildebeest/backend/src/mastodon/client'
+import type { CreateRequest } from 'wildebeest/backend/src/mastodon/subscription'
+import { createSubscription, getSubscription } from 'wildebeest/backend/src/mastodon/subscription'
+import { VAPIDPublicKey } from 'wildebeest/backend/src/mastodon/subscription'
+import { ContextData, Env } from 'wildebeest/backend/src/types'
+import { cors } from 'wildebeest/backend/src/utils/cors'
+import type { JWK } from 'wildebeest/backend/src/webpush/jwk'
 
 export const onRequestGet: PagesFunction<Env, any, ContextData> = async ({ request, env, data }) => {
 	return handleGetRequest(await getDatabase(env), request, data.connectedActor, data.clientId, getVAPIDKeys(env))
@@ -33,7 +32,7 @@ export async function handleGetRequest(
 ) {
 	const client = await getClientById(db, clientId)
 	if (client === null) {
-		return errors.clientUnknown()
+		return errors.notAuthorized('the access token is invalid')
 	}
 
 	const subscription = await getSubscription(db, connectedActor, client)
@@ -64,7 +63,7 @@ export async function handlePostRequest(
 ) {
 	const client = await getClientById(db, clientId)
 	if (client === null) {
-		return errors.clientUnknown()
+		return errors.notAuthorized('the access token is invalid')
 	}
 
 	const data = await request.json<CreateRequest>()

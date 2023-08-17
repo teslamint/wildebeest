@@ -1,198 +1,187 @@
-import type { Env } from 'wildebeest/backend/src/types/env'
-import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+// https://docs.joinmastodon.org/methods/accounts/#statuses
+
 import { PUBLIC_GROUP } from 'wildebeest/backend/src/activitypub/activities'
-import * as errors from 'wildebeest/backend/src/errors'
-import { cors } from 'wildebeest/backend/src/utils/cors'
-import type { Activity } from 'wildebeest/backend/src/activitypub/activities'
-import type { Note } from 'wildebeest/backend/src/activitypub/objects/note'
-import { loadExternalMastodonAccount } from 'wildebeest/backend/src/mastodon/account'
-import { makeGetActorAsId, makeGetObjectAsId } from 'wildebeest/backend/src/activitypub/activities/handle'
-import { parseHandle } from 'wildebeest/backend/src/utils/parse'
-import type { Handle } from 'wildebeest/backend/src/utils/parse'
-import type { ContextData } from 'wildebeest/backend/src/types/context'
-import type { MastodonStatus } from 'wildebeest/backend/src/types'
-import { toMastodonStatusFromObject } from 'wildebeest/backend/src/mastodon/status'
-import * as objects from 'wildebeest/backend/src/activitypub/objects'
-import { actorURL } from 'wildebeest/backend/src/activitypub/actors'
-import * as webfinger from 'wildebeest/backend/src/webfinger'
-import * as outbox from 'wildebeest/backend/src/activitypub/actors/outbox'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import { toMastodonStatusFromRow } from 'wildebeest/backend/src/mastodon/status'
-import { adjustLocalHostDomain } from 'wildebeest/backend/src/utils/adjustLocalHostDomain'
+import { Actor, getActorByMastodonId, Person } from 'wildebeest/backend/src/activitypub/actors'
+import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import { resourceNotFound } from 'wildebeest/backend/src/errors'
+import { isFollowing } from 'wildebeest/backend/src/mastodon/follow'
+import { toMastodonStatusesFromRowsWithActor } from 'wildebeest/backend/src/mastodon/status'
+import { getStatusRange } from 'wildebeest/backend/src/mastodon/timeline'
+import type { ContextData, Env, MastodonId } from 'wildebeest/backend/src/types'
+import { cors, myz, readParams } from 'wildebeest/backend/src/utils'
+import { z } from 'zod'
 
 const headers = {
 	...cors(),
 	'content-type': 'application/json; charset=utf-8',
 }
 
-export const onRequest: PagesFunction<Env, any, ContextData> = async ({ request, env, params }) => {
-	return handleRequest(request, await getDatabase(env), params.id as string)
+const schema = z.object({
+	// return results older than this ID
+	max_id: z.string().optional(),
+	// return results newer than this ID
+	since_id: z.string().optional(),
+	// return results immediately newer than this ID
+	min_id: z.string().optional(),
+	// maximum number of results to return
+	// defaults to 20 statuses. max 40 statuses
+	limit: myz
+		.numeric()
+		.refine((value) => value >= 1 && value <= 40 && (value | 0) === value)
+		.catch(20),
+	// filter out statuses without attachments
+	only_media: myz.logical().default(false),
+	// filter out statuses in reply to a different account
+	exclude_replies: myz.logical().default(false),
+	// filter out boosts from the response
+	exclude_reblogs: myz.logical().default(false),
+	// filter for pinned statuses only. defaults to false,
+	// which includes all statuses. pinned statuses do not receive
+	// special priority in the order of the returned results
+	pinned: myz.logical().default(false),
+	// filter for statuses using a specific hashtag
+	tagged: z.string().optional(),
+})
+
+type Dependencies = {
+	domain: string
+	db: Database
+	connectedActor: Person | undefined
 }
 
-export async function handleRequest(request: Request, db: Database, id: string): Promise<Response> {
-	const handle = parseHandle(id)
-	const url = new URL(request.url)
-	const domain = url.hostname
-	const offset = Number.parseInt(url.searchParams.get('offset') ?? '0')
-	const withReplies = url.searchParams.get('with-replies') === 'true'
+type Parameters = z.infer<typeof schema>
 
-	if (handle.domain === null || (handle.domain !== null && handle.domain === domain)) {
-		// Retrieve the statuses from a local user
-		return getLocalStatuses(request, db, handle, offset, withReplies)
-	} else if (handle.domain !== null) {
-		// Retrieve the statuses of a remote actor
-		return getRemoteStatuses(request, handle, db)
-	} else {
-		return new Response('', { status: 403 })
+export const onRequestGet: PagesFunction<Env, 'id', Partial<ContextData>> = async ({
+	request,
+	env,
+	params: { id },
+	data,
+}) => {
+	if (typeof id !== 'string') {
+		return resourceNotFound('id', String(id))
 	}
+	const result = await readParams(request, schema)
+	if (!result.success) {
+		return new Response('', { status: 400 })
+	}
+	const url = new URL(request.url)
+	return handleRequest(
+		{ domain: url.hostname, db: await getDatabase(env), connectedActor: data?.connectedActor },
+		id,
+		result.data
+	)
 }
 
-async function getRemoteStatuses(request: Request, handle: Handle, db: Database): Promise<Response> {
-	const url = new URL(request.url)
-	const domain = url.hostname
-	const isPinned = url.searchParams.get('pinned') === 'true'
-	if (isPinned) {
+export async function handleRequest(deps: Dependencies, id: MastodonId, params: Parameters): Promise<Response> {
+	const actor = await getActorByMastodonId(deps.db, id)
+	if (actor) {
+		return await getStatuses(deps, actor, params)
+	}
+	return resourceNotFound('id', id)
+}
+
+// TODO: support tagged parameter
+async function getStatuses(
+	{ domain, db, connectedActor }: Dependencies,
+	actor: Actor,
+	params: Parameters
+): Promise<Response> {
+	if (params.pinned) {
 		// TODO: pinned statuses are not implemented yet. Stub the endpoint
 		// to avoid returning statuses that aren't pinned.
 		return new Response(JSON.stringify([]), { headers })
 	}
 
-	const acct = `${handle.localPart}@${handle.domain}`
-	const link = await webfinger.queryAcctLink(handle.domain!, acct)
-	if (link === null) {
-		return new Response('', { status: 404 })
+	// Client asked to retrieve statuses using max_id or (max_id and since_id) or min_id
+	// As opposed to Mastodon we don't use incremental ID but UUID, we need
+	// to retrieve the cdate of the xxx_id row and only show the specific statuses.
+	const [max, min] = await getStatusRange(db, params.max_id, params.since_id ?? params.min_id)
+	if (params.max_id && max === null) {
+		return resourceNotFound('max_id', params.max_id)
+	}
+	if (params.since_id && min === null) {
+		return resourceNotFound('since_id', params.since_id)
+	}
+	if (params.min_id && min === null) {
+		return resourceNotFound('min_id', params.min_id)
 	}
 
-	const actor = await actors.getAndCache(link, db)
-
-	const activities = await outbox.get(actor)
-
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars -- TODO: use account
-	const account = await loadExternalMastodonAccount(acct, actor)
-
-	const promises = activities.items.map(async (activity: Activity) => {
-		const getObjectAsId = makeGetObjectAsId(activity)
-		const getActorAsId = makeGetActorAsId(activity)
-
-		if (activity.type === 'Create') {
-			const actorId = getActorAsId()
-			const originalObjectId = getObjectAsId()
-			const res = await objects.cacheObject(domain, db, activity.object, actorId, originalObjectId, false)
-			return toMastodonStatusFromObject(db, res.object as Note, domain)
+	const targets = [PUBLIC_GROUP]
+	if (connectedActor) {
+		targets.push(connectedActor.id.toString())
+		if (await isFollowing(db, connectedActor, actor)) {
+			targets.push(actor.followers.toString())
 		}
-
-		if (activity.type === 'Announce') {
-			let obj: any
-
-			const actorId = getActorAsId()
-			const objectId = getObjectAsId()
-
-			const localObject = await objects.getObjectById(db, objectId)
-			if (localObject === null) {
-				try {
-					// Object doesn't exists locally, we'll need to download it.
-					const remoteObject = await objects.get<Note>(objectId)
-
-					const res = await objects.cacheObject(domain, db, remoteObject, actorId, objectId, false)
-					if (res === null) {
-						return null
-					}
-					obj = res.object
-				} catch (err: any) {
-					console.warn(`failed to retrieve object ${objectId}: ${err.message}`)
-					return null
-				}
-			} else {
-				// Object already exists locally, we can just use it.
-				obj = localObject
-			}
-
-			return toMastodonStatusFromObject(db, obj, domain)
-		}
-
-		// FIXME: support other Activities, like Update.
-	})
-	const statuses = (await Promise.all(promises)).filter(Boolean)
-
-	return new Response(JSON.stringify(statuses), { headers })
-}
-
-export async function getLocalStatuses(
-	request: Request,
-	db: Database,
-	handle: Handle,
-	offset: number,
-	withReplies: boolean
-): Promise<Response> {
-	const domain = new URL(request.url).hostname
-	const actorId = actorURL(adjustLocalHostDomain(domain), handle.localPart)
-
-	const QUERY = `
-SELECT objects.*,
-       actors.id as actor_id,
-       actors.cdate as actor_cdate,
-       actors.properties as actor_properties,
-       outbox_objects.actor_id as publisher_actor_id,
-       (SELECT count(*) FROM actor_favourites WHERE actor_favourites.object_id=objects.id) as favourites_count,
-       (SELECT count(*) FROM actor_reblogs WHERE actor_reblogs.object_id=objects.id) as reblogs_count,
-       (SELECT count(*) FROM actor_replies WHERE actor_replies.in_reply_to_object_id=objects.id) as replies_count
-FROM outbox_objects
-INNER JOIN objects ON objects.id=outbox_objects.object_id
-INNER JOIN actors ON actors.id=outbox_objects.actor_id
-WHERE objects.type='Note'
-      ${withReplies ? '' : 'AND ' + db.qb.jsonExtractIsNull('objects.properties', 'inReplyTo')}
-      AND outbox_objects.target = '${PUBLIC_GROUP}'
-      AND outbox_objects.actor_id = ?1
-      AND outbox_objects.cdate > ?2${db.qb.psqlOnly('::timestamp')}
-ORDER by outbox_objects.published_date DESC
-LIMIT ?3 OFFSET ?4
-`
-
-	const DEFAULT_LIMIT = 20
-
-	const out: Array<MastodonStatus> = []
-
-	const url = new URL(request.url)
-
-	const isPinned = url.searchParams.get('pinned') === 'true'
-	if (isPinned) {
-		// TODO: pinned statuses are not implemented yet. Stub the endpoint
-		// to avoid returning statuses that aren't pinned.
-		return new Response(JSON.stringify(out), { headers })
-	}
-
-	let afterCdate = db.qb.epoch()
-	if (url.searchParams.has('max_id')) {
-		// Client asked to retrieve statuses after the max_id
-		// As opposed to Mastodon we don't use incremental ID but UUID, we need
-		// to retrieve the cdate of the max_id row and only show the newer statuses.
-		const maxId = url.searchParams.get('max_id')!
-
-		const row: any = await db.prepare('SELECT cdate FROM outbox_objects WHERE object_id=?').bind(maxId).first()
-		if (!row) {
-			return errors.statusNotFound(maxId)
-		}
-		afterCdate = row.cdate
 	}
 
 	const { success, error, results } = await db
-		.prepare(QUERY)
-		.bind(actorId.toString(), afterCdate, DEFAULT_LIMIT, offset)
-		.all()
+		.prepare(
+			`
+SELECT
+  objects.id,
+  objects.mastodon_id,
+  objects.cdate,
+  objects.properties,
+
+  outbox_objects.actor_id as publisher_actor_id,
+  outbox_objects.published_date as publisher_published,
+  outbox_objects.'to' as publisher_to,
+  outbox_objects.cc as publisher_cc,
+
+  (SELECT count(*) FROM actor_favourites WHERE actor_favourites.object_id=objects.id) as favourites_count,
+  (SELECT count(*) FROM actor_reblogs WHERE actor_reblogs.object_id=objects.id) as reblogs_count,
+  (SELECT count(*) FROM actor_replies WHERE actor_replies.in_reply_to_object_id=objects.id) as replies_count,
+
+  actor_reblogs.id as reblog_id,
+	actor_reblogs.mastodon_id as reblog_mastodon_id
+FROM outbox_objects
+  INNER JOIN objects ON objects.id = outbox_objects.object_id
+  LEFT OUTER JOIN actor_reblogs ON actor_reblogs.outbox_object_id = outbox_objects.id
+WHERE
+  objects.type = 'Note'
+  AND outbox_objects.actor_id = ?1
+  ${params.exclude_replies ? `AND ${db.qb.jsonExtractIsNull('objects.properties', 'inReplyTo')}` : ''}
+  AND (EXISTS(SELECT 1 FROM json_each(outbox_objects.'to') WHERE json_each.value IN ${db.qb.set('?2')})
+        OR EXISTS(SELECT 1 FROM json_each(outbox_objects.cc) WHERE json_each.value IN ${db.qb.set('?2')}))
+  AND ${db.qb.timeNormalize('outbox_objects.cdate')} ${max ? '<' : '>'} ?3
+  ${max && min ? 'AND ' + db.qb.timeNormalize('outbox_objects.cdate') + ' > ?5' : ''}
+  ${params.exclude_reblogs ? 'AND actor_reblogs.id IS NULL' : ''}
+  ${params.only_media ? `AND ${db.qb.jsonArrayLength(db.qb.jsonExtract('objects.properties', 'attachment'))} != 0` : ''}
+ORDER BY ${db.qb.timeNormalize('outbox_objects.published_date')} DESC
+LIMIT ?4
+  `
+		)
+		.bind(
+			...(max && min
+				? [actor.id.toString(), JSON.stringify(targets), max, params.limit, min]
+				: min
+				? [actor.id.toString(), JSON.stringify(targets), max ?? db.qb.epoch(), params.limit, min]
+				: [actor.id.toString(), JSON.stringify(targets), max ?? db.qb.epoch(), params.limit])
+		)
+		.all<{
+			id: string
+			mastodon_id: string
+			cdate: string
+			properties: string
+
+			publisher_actor_id: string
+			publisher_published: string
+			publisher_to: string
+			publisher_cc: string
+
+			favourites_count: number
+			reblogs_count: number
+			replies_count: number
+
+			reblog_id: string | null
+			reblog_mastodon_id: string | null
+		}>()
 	if (!success) {
 		throw new Error('SQL error: ' + error)
 	}
-
-	if (!results) {
-		return new Response(JSON.stringify(out), { headers })
+	if (!results || results.length === 0) {
+		return new Response(JSON.stringify([]), { headers })
 	}
-
-	for (let i = 0, len = results.length; i < len; i++) {
-		const status = await toMastodonStatusFromRow(domain, db, results[i])
-		if (status !== null) {
-			out.push(status)
-		}
-	}
-
-	return new Response(JSON.stringify(out), { headers })
+	const statuses = await toMastodonStatusesFromRowsWithActor(domain, db, actor, results)
+	return new Response(JSON.stringify(statuses), { headers })
 }

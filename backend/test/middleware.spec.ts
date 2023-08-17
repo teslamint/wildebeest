@@ -1,8 +1,9 @@
-import { isUrlValid, makeDB, assertCORS } from './utils'
-import { createPerson } from 'wildebeest/backend/src/activitypub/actors'
-import { TEST_JWT, ACCESS_CERTS } from './test-data'
 import { strict as assert } from 'node:assert/strict'
+
 import * as middleware_main from 'wildebeest/backend/src/middleware/main'
+
+import { ACCESS_CERTS, TEST_JWT } from './test-data'
+import { assertCORS, assertStatus, createTestUser, isUrlValid, makeDB } from './utils'
 
 const userKEK = 'test_kek12'
 const domain = 'cloudflare.com'
@@ -17,21 +18,27 @@ describe('middleware', () => {
 		}
 
 		const res = await middleware_main.main(ctx)
-		assert.equal(res.status, 200)
+		await assertStatus(res, 200)
 		assertCORS(res)
 	})
 
 	test('test no identity', async () => {
 		globalThis.fetch = async (input: RequestInfo) => {
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
-				return new Response(JSON.stringify(ACCESS_CERTS))
+			if (input instanceof URL || typeof input === 'string') {
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
+					return new Response(JSON.stringify(ACCESS_CERTS))
+				}
+
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
+					return new Response('', { status: 404 })
+				}
 			}
 
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
-				return new Response('', { status: 404 })
+			if (input instanceof URL || typeof input === 'string') {
+				throw new Error('unexpected request to ' + input.toString())
+			} else {
+				throw new Error('unexpected request to ' + input.url)
 			}
-
-			throw new Error('unexpected request to ' + input)
 		}
 
 		const db = await makeDB()
@@ -45,24 +52,30 @@ describe('middleware', () => {
 		}
 
 		const res = await middleware_main.main(ctx)
-		assert.equal(res.status, 401)
+		await assertStatus(res, 401)
 	})
 
 	test('test user not found', async () => {
 		globalThis.fetch = async (input: RequestInfo) => {
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
-				return new Response(JSON.stringify(ACCESS_CERTS))
+			if (input instanceof URL || typeof input === 'string') {
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
+					return new Response(JSON.stringify(ACCESS_CERTS))
+				}
+
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
+					return new Response(
+						JSON.stringify({
+							email: 'some@cloudflare.com',
+						})
+					)
+				}
 			}
 
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
-				return new Response(
-					JSON.stringify({
-						email: 'some@cloudflare.com',
-					})
-				)
+			if (input instanceof URL || typeof input === 'string') {
+				throw new Error('unexpected request to ' + input.toString())
+			} else {
+				throw new Error('unexpected request to ' + input.url)
 			}
-
-			throw new Error('unexpected request to ' + input)
 		}
 
 		const db = await makeDB()
@@ -76,28 +89,34 @@ describe('middleware', () => {
 		}
 
 		const res = await middleware_main.main(ctx)
-		assert.equal(res.status, 401)
+		await assertStatus(res, 401)
 	})
 
 	test('success passes data and calls next', async () => {
 		globalThis.fetch = async (input: RequestInfo) => {
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
-				return new Response(JSON.stringify(ACCESS_CERTS))
+			if (input instanceof URL || typeof input === 'string') {
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/certs') {
+					return new Response(JSON.stringify(ACCESS_CERTS))
+				}
+
+				if (input.toString() === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
+					return new Response(
+						JSON.stringify({
+							email: 'sven@cloudflare.com',
+						})
+					)
+				}
 			}
 
-			if (input === 'https://' + accessDomain + '/cdn-cgi/access/get-identity') {
-				return new Response(
-					JSON.stringify({
-						email: 'sven@cloudflare.com',
-					})
-				)
+			if (input instanceof URL || typeof input === 'string') {
+				throw new Error('unexpected request to ' + input.toString())
+			} else {
+				throw new Error('unexpected request to ' + input.url)
 			}
-
-			throw new Error('unexpected request to ' + input)
 		}
 
 		const db = await makeDB()
-		await createPerson(domain, db, userKEK, 'sven@cloudflare.com')
+		await createTestUser(domain, db, userKEK, 'sven@cloudflare.com')
 
 		const headers = { authorization: 'Bearer APPID.' + TEST_JWT }
 		const request = new Request('https://example.com', { headers })
@@ -109,7 +128,7 @@ describe('middleware', () => {
 		}
 
 		const res = await middleware_main.main(ctx)
-		assert.equal(res.status, 200)
+		await assertStatus(res, 200)
 		assert(!ctx.data.connectedUser)
 		assert(isUrlValid(ctx.data.connectedActor.id))
 		assert.equal(ctx.env.ACCESS_AUTH_DOMAIN, accessDomain)

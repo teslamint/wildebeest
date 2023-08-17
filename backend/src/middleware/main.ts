@@ -1,43 +1,30 @@
 import * as access from 'wildebeest/backend/src/access'
-import * as actors from 'wildebeest/backend/src/activitypub/actors'
-import type { Env } from 'wildebeest/backend/src/types/env'
-import * as errors from 'wildebeest/backend/src/errors'
-import { cors } from 'wildebeest/backend/src/utils/cors'
+import { getUserByEmail } from 'wildebeest/backend/src/accounts'
 import { type Database, getDatabase } from 'wildebeest/backend/src/database'
+import * as errors from 'wildebeest/backend/src/errors'
+import type { ContextData, Env } from 'wildebeest/backend/src/types'
+import { cors } from 'wildebeest/backend/src/utils/cors'
 
-async function loadContextData(db: Database, clientId: string, email: string, ctx: any): Promise<boolean> {
-	const query = `
-        SELECT *
-        FROM actors
-        WHERE email=? AND type='Person'
-    `
-	const { results, success, error } = await db.prepare(query).bind(email).all()
-	if (!success) {
-		throw new Error('SQL error: ' + error)
-	}
-
-	if (!results || results.length === 0) {
-		console.warn('no results')
-		return false
-	}
-
-	const row: any = results[0]
-
-	if (!row.id) {
+async function loadContextData(
+	db: Database,
+	clientId: string,
+	email: string,
+	ctx: { data: Partial<ContextData> }
+): Promise<boolean> {
+	const actor = await getUserByEmail(db, email)
+	if (actor === null) {
 		console.warn('person not found')
 		return false
 	}
 
-	const person = actors.personFromRow(row)
-
-	ctx.data.connectedActor = person
+	ctx.data.connectedActor = actor
 	ctx.data.identity = { email }
 	ctx.data.clientId = clientId
 
 	return true
 }
 
-export async function main(context: EventContext<Env, any, any>) {
+export async function main(context: EventContext<Env, string, Partial<ContextData>>) {
 	if (context.request.method === 'OPTIONS') {
 		const headers = {
 			...cors(),
@@ -64,6 +51,7 @@ export async function main(context: EventContext<Env, any, any>) {
 		/^\/api\/v1\/accounts\/(.*)\/statuses$/.test(url.pathname) ||
 		url.pathname.startsWith('/api/v1/tags/') ||
 		url.pathname.startsWith('/api/v1/timelines/tag/') ||
+		url.pathname.startsWith('/api/v1/accounts/lookup') ||
 		url.pathname.startsWith('/ap/') // all ActivityPub endpoints
 	) {
 		return context.next()

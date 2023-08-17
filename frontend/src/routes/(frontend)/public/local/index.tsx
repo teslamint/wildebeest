@@ -11,7 +11,10 @@ import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
 export const statusesLoader = loader$<Promise<MastodonStatus[]>>(async ({ platform, html }) => {
 	try {
 		// TODO: use the "trending" API endpoint here.
-		const response = await timelines.handleRequest(platform.domain, await getDatabase(platform), { local: true })
+		const response = await timelines.handleRequest(
+			{ domain: platform.DOMAIN, db: await getDatabase(platform) },
+			{ local: true, remote: false, only_media: false, limit: 20 }
+		)
 		const results = await response.text()
 		// Manually parse the JSON to ensure that Qwik finds the resulting objects serializable.
 		return JSON.parse(results) as MastodonStatus[]
@@ -34,10 +37,10 @@ export default component$(() => {
 			</StickyHeader>
 			<StatusesPanel
 				initialStatuses={statuses}
-				fetchMoreStatuses={$(async (numOfCurrentStatuses: number) => {
+				fetchMoreStatuses={$(async (maxId: string) => {
 					let statuses: MastodonStatus[] = []
 					try {
-						const response = await fetch(`/api/v1/timelines/public?local=true&offset=${numOfCurrentStatuses}`)
+						const response = await fetch(`/api/v1/timelines/public?local=true&max_id=${maxId}`)
 						if (response.ok) {
 							const results = await response.text()
 							statuses = JSON.parse(results)
@@ -52,13 +55,10 @@ export default component$(() => {
 	)
 })
 
-export const requestLoader = loader$(async ({ request }) => {
-	// Manually parse the JSON to ensure that Qwik finds the resulting objects serializable.
-	return JSON.parse(JSON.stringify(request)) as Request
-})
+export const requestUrlLoader = loader$(async ({ request }) => request.url)
 
 export const head: DocumentHead = ({ resolveValue }) => {
-	const { url } = resolveValue(requestLoader)
+	const url = resolveValue(requestUrlLoader)
 	return getDocumentHead({
 		title: 'Local timeline - Wildebeest',
 		og: {

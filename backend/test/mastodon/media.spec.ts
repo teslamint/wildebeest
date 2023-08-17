@@ -1,11 +1,12 @@
-import * as media from 'wildebeest/functions/api/v2/media'
-import { createImage } from 'wildebeest/backend/src/activitypub/objects/image'
-import * as media_id from 'wildebeest/functions/api/v2/media/[id]'
-import { createPerson } from 'wildebeest/backend/src/activitypub/actors'
 import { strict as assert } from 'node:assert/strict'
-import { makeDB, assertJSON, isUrlValid } from '../utils'
+
 import * as objects from 'wildebeest/backend/src/activitypub/objects'
 import { mastodonIdSymbol, originalActorIdSymbol } from 'wildebeest/backend/src/activitypub/objects'
+import { createImage, Image } from 'wildebeest/backend/src/activitypub/objects/image'
+import * as media from 'wildebeest/functions/api/v2/media'
+import * as media_id from 'wildebeest/functions/api/v2/media/[id]'
+
+import { assertJSON, assertStatus, createTestUser, isUrlValid, makeDB } from '../utils'
 
 const userKEK = 'test_kek10'
 const CF_ACCOUNT_ID = 'testaccountid'
@@ -32,7 +33,7 @@ describe('Mastodon APIs', () => {
 			}
 
 			const db = await makeDB()
-			const connectedActor = await createPerson(domain, db, userKEK, 'sven@cloudflare.com')
+			const connectedActor = await createTestUser(domain, db, userKEK, 'sven@cloudflare.com')
 
 			const file = new File(['abc'], 'image.jpeg', { type: 'image/jpeg' })
 
@@ -44,10 +45,10 @@ describe('Mastodon APIs', () => {
 				body,
 			})
 			const res = await media.handleRequestPost(req, db, connectedActor, CF_ACCOUNT_ID, CF_API_TOKEN)
-			assert.equal(res.status, 200)
+			await assertStatus(res, 200)
 			assertJSON(res)
 
-			const data = await res.json<any>()
+			const data = await res.json<{ id: string; url: string; preview_url: string }>()
 			assert(!isUrlValid(data.id))
 			assert(isUrlValid(data.url))
 			assert(isUrlValid(data.preview_url))
@@ -61,12 +62,11 @@ describe('Mastodon APIs', () => {
 
 		test('update image description', async () => {
 			const db = await makeDB()
-			const connectedActor = await createPerson(domain, db, userKEK, 'sven@cloudflare.com')
-			const properties = {
+			const connectedActor = await createTestUser(domain, db, userKEK, 'sven@cloudflare.com')
+			const image = await createImage(domain, db, connectedActor, {
 				url: 'https://cloudflare.com/image.jpg',
 				description: 'foo bar',
-			}
-			const image = await createImage(domain, db, connectedActor, properties)
+			})
 
 			const request = new Request('https://' + domain, {
 				method: 'PUT',
@@ -76,14 +76,20 @@ describe('Mastodon APIs', () => {
 				},
 			})
 
-			const res = await media_id.handleRequestPut(db, image[mastodonIdSymbol]!, request)
-			assert.equal(res.status, 200)
+			const res = await media_id.onRequestPut({
+				request,
+				env: { DATABASE: db },
+				params: { id: image[mastodonIdSymbol]! },
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			} as any)
+			await assertStatus(res, 200)
 
-			const data = await res.json<any>()
+			const data = await res.json<{ description: unknown }>()
 			assert.equal(data.description, 'new foo bar')
 
-			const newImage = (await objects.getObjectByMastodonId(db, image[mastodonIdSymbol]!)) as any
-			assert.equal(newImage.description, 'new foo bar')
+			const newImage = await objects.getObjectByMastodonId(db, image[mastodonIdSymbol]!)
+			assert.ok(newImage)
+			assert.equal((newImage as Image).description, 'new foo bar')
 		})
 	})
 })
