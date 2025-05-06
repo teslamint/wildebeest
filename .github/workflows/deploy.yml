@@ -100,21 +100,20 @@ jobs:
 
       - name: Check D1 database
         run: |
-          alpha_exists=$(npx wrangler d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}" and .version == "alpha") | .name')
-          beta_exists=$(npx wrangler d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}-v1" and .version == "beta") | .name')
-          [[ -n "$alpha_exists" && -z "$beta_exists" ]] && echo "Error: There is an alpha version of D1 but no corresponding beta version." && exit 1 || exit 0
+          db_exists=$(pnpx wrangler@3 d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}-v1") | .name')
+          [[ -n "$db_exists" ]] && echo "Error: There is no D1 database with name: wildebeest-${{ env.NAME_SUFFIX }}-v1" && exit 1 || exit 0
 
       - name: Create D1 database
         continue-on-error: true
-        run: npx wrangler d1 create wildebeest-${{ env.NAME_SUFFIX }}-v1
+        run: pnpx wrangler@3 d1 create wildebeest-${{ env.NAME_SUFFIX }}-v1
 
       - name: retrieve D1 database
-        run: npx wrangler d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}-v1") | .uuid' | awk '{print "d1_id="$1}' >> $GITHUB_ENV
+        run: pnpx wrangler@3 d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}-v1") | .uuid' | awk '{print "d1_id="$1}' >> $GITHUB_ENV
 
       - name: migrate D1 database
         run: |
           echo -e "[[d1_databases]]\nbinding=\"DATABASE\"\ndatabase_name=\"wildebeest-${{ env.NAME_SUFFIX }}-v1\"\ndatabase_id=\"${{ env.d1_id }}\"" >> wrangler.toml
-          npx wrangler d1 migrations apply wildebeest-${{ env.NAME_SUFFIX }}-v1
+          pnpx wrangler@3 d1 migrations apply wildebeest-${{ env.NAME_SUFFIX }}-v1
 
       - name: retrieve Zero Trust organization
         run: |
@@ -124,7 +123,7 @@ jobs:
 
       - name: retrieve Terraform state KV namespace
         run: |
-          npx wrangler kv:namespace list | jq -r '.[] | select( .title == "wildebeest-terraform-${{ env.NAME_SUFFIX }}-state" ) | .id' | awk '{print "tfstate_kv="$1}' >> $GITHUB_ENV
+          pnpx wrangler@3 kv:namespace list | jq -r '.[] | select( .title == "wildebeest-terraform-${{ env.NAME_SUFFIX }}-state" ) | .id' | awk '{print "tfstate_kv="$1}' >> $GITHUB_ENV
 
       - name: Init
         run: terraform init
@@ -133,13 +132,13 @@ jobs:
       - name: download Terraform state
         if: ${{ env.tfstate_kv != '' }}
         run: |
-          npx wrangler kv:key get --namespace-id=${{ env.tfstate_kv }} terraform.tfstate > ./tf/terraform.tfstate
+          pnpx wrangler@3 kv:key get --namespace-id=${{ env.tfstate_kv }} terraform.tfstate > ./tf/terraform.tfstate
           chmod 777 ./tf/terraform.tfstate
 
       - name: download VAPID keys
         if: ${{ env.tfstate_kv != '' }}
         continue-on-error: true
-        run: npx wrangler kv:key get --namespace-id=${{ env.tfstate_kv }} vapid_jwk | jq . > ./tf/vapid_jwk
+        run: pnpx wrangler@3 kv:key get --namespace-id=${{ env.tfstate_kv }} vapid_jwk | jq . > ./tf/vapid_jwk
 
       - name: generate VAPID keys if needed
         run: |
@@ -154,7 +153,7 @@ jobs:
       - name: Publish DO
         run: |
           pnpm --dir do install
-          npx wrangler deploy --config do/wrangler.toml
+          pnpx wrangler@3 deploy --config do/wrangler.toml
 
       - name: Retrieve DO namespace
         run: |
@@ -183,17 +182,17 @@ jobs:
 
       - name: retrieve Terraform state KV namespace
         if: ${{ env.tfstate_kv == '' }}
-        run: npx wrangler kv:namespace list | jq -r '.[] | select( .title == "wildebeest-terraform-${{ env.NAME_SUFFIX }}-state" ) | .id' | awk '{print "tfstate_kv="$1}' >> $GITHUB_ENV
+        run: pnpx wrangler@3 kv:namespace list | jq -r '.[] | select( .title == "wildebeest-terraform-${{ env.NAME_SUFFIX }}-state" ) | .id' | awk '{print "tfstate_kv="$1}' >> $GITHUB_ENV
 
       - name: store VAPID keys state
-        run: npx wrangler kv:key put --namespace-id=${{ env.tfstate_kv }} vapid_jwk --path=./tf/vapid_jwk
+        run: pnpx wrangler@3 kv:key put --namespace-id=${{ env.tfstate_kv }} vapid_jwk --path=./tf/vapid_jwk
 
       - name: store Terraform state
-        run: npx wrangler kv:key put --namespace-id=${{ env.tfstate_kv }} terraform.tfstate --path=./tf/terraform.tfstate
+        run: pnpx wrangler@3 kv:key put --namespace-id=${{ env.tfstate_kv }} terraform.tfstate --path=./tf/terraform.tfstate
 
       - name: Create Queue
         continue-on-error: true
-        run: npx wrangler queues create wildebeest-${{ env.NAME_SUFFIX }}
+        run: pnpx wrangler@3 queues create wildebeest-${{ env.NAME_SUFFIX }}
 
       - name: Publish consumer
         run: |
@@ -219,7 +218,7 @@ jobs:
 
           pnpm --dir consumer install
           echo "******"
-          npx wrangler deploy --config consumer/wrangler.toml
+          pnpx wrangler@3 deploy --config consumer/wrangler.toml
 
       - name: add Queue producer to Pages
         run: |
@@ -248,4 +247,4 @@ jobs:
           # remove folder that aren't needed in Pages before we upload
           rm -rf ./tf ./scripts ./.github ./.npm ./consumer ./do ./*.md ./.cache ./.local ./.pnpm-store
           echo "******"
-          npx wrangler pages deploy --project-name=wildebeest-${{ env.NAME_SUFFIX }} .
+          pnpx wrangler@3 pages deploy --project-name=wildebeest-${{ env.NAME_SUFFIX }} .
