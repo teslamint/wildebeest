@@ -12,18 +12,7 @@ export const onRequest: PagesFunction<unknown, any> = async ({ request }) => {
 }
 
 export async function handleRequest(domain: string): Promise<Response> {
-	const res = {
-		links: [
-			{
-				rel: 'http://nodeinfo.diaspora.software/ns/schema/2.0',
-				href: `https://${domain}/nodeinfo/2.0`,
-			},
-			{
-				rel: 'http://nodeinfo.diaspora.software/ns/schema/2.1',
-				href: `https://${domain}/nodeinfo/2.1`,
-			},
-		],
-	}
+	const res = null
 
-	return new Response(JSON.stringify(res), { headers })
+	return new Response(JSON.stringify(res), { status: 410, statusText: 'Gone', headers })
 }
