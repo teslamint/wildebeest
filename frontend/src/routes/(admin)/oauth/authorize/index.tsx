@@ -11,7 +11,7 @@ import { getJwtEmail } from 'wildebeest/backend/src/utils/auth/getJwtEmail'
 import { getUserByEmail } from 'wildebeest/backend/src/accounts'
 
 export const clientLoader = loader$<Promise<Client>>(async ({ platform, query, html }) => {
-	const client_id = query.get('client_id') || ''
+	const client_id = query.get('client_id') ?? ''
 	let client: Client | null = null
 	try {
 		client = await getClientById(await getDatabase(platform), client_id)
@@ -42,9 +42,9 @@ export const userLoader = loader$<Promise<{ email: string; avatar: URL; name: st
 			/* eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 				-- jwt is defined otherwise getJwtEmail would have thrown
 			*/
-			const res = await buildRedirect(await getDatabase(platform), request as Request, isFirstLogin, jwt!.value)
+			const res = await buildRedirect(await getDatabase(platform), request, isFirstLogin, jwt!.value)
 			if (res.status === 302) {
-				throw redirect(302, res.headers.get('location') || '')
+				throw redirect(302, res.headers.get('location') ?? '')
 			} else {
 				throw text(res.status, await res.text())
 			}
