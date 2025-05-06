@@ -101,7 +101,7 @@ jobs:
       - name: Check D1 database
         run: |
           db_exists=$(pnpx wrangler@3 d1 list --json | jq -r '.[] | select(.name == "wildebeest-${{ env.NAME_SUFFIX }}-v1") | .name')
-          [[ -n "$db_exists" ]] && echo "Error: There is no D1 database with name: wildebeest-${{ env.NAME_SUFFIX }}-v1" && exit 1 || exit 0
+          [[ -z "$db_exists" || "" = "$db_exists" ]] && echo "Error: There is no D1 database with name: wildebeest-${{ env.NAME_SUFFIX }}-v1" && exit 1 || exit 0
 
       - name: Create D1 database
         continue-on-error: true
