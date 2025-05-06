@@ -83,9 +83,9 @@ provider "cloudflare" {
 
 // The KV cache namespace isn't used anymore but Terraform isn't able
 // to remove the binding from the Pages project, so leaving for now.
-resource "cloudflare_workers_kv_namespace" "wildebeest_cache" {	
-  account_id = var.cloudflare_account_id	
-  title = "wildebeest-${lower(var.name_suffix)}-cache"	
+resource "cloudflare_workers_kv_namespace" "wildebeest_cache" {
+  account_id = var.cloudflare_account_id
+  title = "wildebeest-${lower(var.name_suffix)}-cache"
 }
 
 resource "cloudflare_workers_kv_namespace" "terraform_state" {
@@ -101,7 +101,7 @@ resource "random_password" "user_key" {
 resource "cloudflare_pages_project" "wildebeest_pages_project" {
   account_id = var.cloudflare_account_id
   name              = "wildebeest-${lower(var.name_suffix)}"
-  production_branch = "main"
+  production_branch = "tmint-social"
 
   deployment_configs {
     production {
@@ -125,8 +125,8 @@ resource "cloudflare_pages_project" "wildebeest_pages_project" {
         SENTRY_ACCESS_CLIENT_SECRET = var.sentry_access_client_secret
       }
 
-      kv_namespaces = {	
-        KV_CACHE = sensitive(cloudflare_workers_kv_namespace.wildebeest_cache.id)	
+      kv_namespaces = {
+        KV_CACHE = sensitive(cloudflare_workers_kv_namespace.wildebeest_cache.id)
       }
 
       d1_databases = {
