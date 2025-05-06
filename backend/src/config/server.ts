@@ -10,14 +10,14 @@ export async function getSettings(db: Database): Promise<ServerSettingsData> {
 			...settings,
 			[setting_name]: setting_value,
 		}),
-		{}
+		{} as ServerSettingsData
 	)
 
 	if (!result.success) {
 		throw new Error('SQL Error: ' + result.error)
 	}
 
-	return data as ServerSettingsData
+	return data
 }
 
 export async function updateSettings(db: Database, data: Partial<ServerSettingsData>) {
