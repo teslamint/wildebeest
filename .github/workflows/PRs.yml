@@ -2,7 +2,7 @@ name: Pull request checks
 on:
   push:
     branches:
-      - main
+      - tmint-social
     paths-ignore:
       - '.github/workflows/**'
       - '!.github/workflows/PRs.yml'
